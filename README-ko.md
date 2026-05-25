@@ -9,7 +9,7 @@ AirDrop, AWDL, iPhone 검색 및 Apple 측과의 상호 운용은 지원하지 �
 <img src="docs/assets/settings.jpg" alt="Bada settings UI screenshot" width="360">
 
 ## 주요 기능
-- 근처 Quick Share 발신자로부터 파일을 수신하여 다운로드 폴더 또는 앱에서 선택한 폴더에 저장합니다.
+- 근처 Quick Share 발신자로부터 동일한 LAN에서의 Wi-Fi 및 Wi-Fi Direct 경로를 통해 파일을 수신한 다음, 다운로드 폴더 또는 앱에서 선택한 폴더에 저장합니다.
 - Android 시스템 공유 시트에서 근처 Quick Share 대상 장치에게 파일을 전송합니다.
 - 앱의 **폴더 보내기** 버튼을 사용하여 폴더를 전송하고, 수신자의 폴더 레이아웃을 그대로 유지합니다.
 - Quick Share에서 전송받을 시 확인할 수 있는 4자리 PIN 확인 절차를 보여줍니다.
