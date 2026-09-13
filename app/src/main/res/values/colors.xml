@@ -59,6 +59,17 @@
       up a coherent dark surface palette without any drawable having
       to know which mode it's in.
     -->
+    <!--
+      Page and floating surfaces, pinned explicitly instead of inherited
+      from the Bridge theme's AppCompat defaults (#280). Day keeps the
+      AppCompat light values exactly (#FAFAFA page, white floating), so
+      nothing moves in light mode; night overrides both so the page is the
+      darkest layer and every card / chip steps up from it. Pure black is
+      deliberately avoided: it smears on OLED panels during scrolls and
+      sheet animations.
+    -->
+    <color name="page_background">#FFFAFAFA</color>
+    <color name="surface_floating">#FFFFFFFF</color>
     <color name="surface_card">#FFFFFFFF</color>
     <color name="surface_chip">#FFF2F4F7</color>
     <color name="surface_card_stroke">#14000000</color>

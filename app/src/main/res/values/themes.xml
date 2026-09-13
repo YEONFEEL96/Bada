@@ -49,6 +49,16 @@
         <item name="fontFamily">@font/google_sans_flex</item>
         <item name="android:fontFamily">@font/google_sans_flex</item>
 
+        <!--
+          Page and floating surfaces come from our own tokens rather than
+          the Bridge theme's AppCompat defaults (#280): the AppCompat night
+          background is #303030, brighter than our #1F1F1F-era cards, so the
+          dark theme rendered cards darker than the page. Day values equal
+          the AppCompat light defaults, so light mode is unchanged.
+        -->
+        <item name="android:colorBackground">@color/page_background</item>
+        <item name="android:windowBackground">@color/page_background</item>
+        <item name="android:colorBackgroundFloating">@color/surface_floating</item>
         <item name="android:statusBarColor" tools:targetApi="l">?android:attr/colorBackground</item>
         <item name="android:windowLightStatusBar" tools:targetApi="m">@bool/window_light_status_bar</item>
 
