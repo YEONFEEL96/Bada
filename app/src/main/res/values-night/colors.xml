@@ -82,4 +82,10 @@
          blurred backdrop is darkened (not lightened) on a dark
          page; foreground panel text stays readable on top. -->
     <color name="card_blur_overlay">#80000000</color>
+    <!--
+      Send-picker radio banner (#290): low-alpha brand blue plate + hairline
+      so the box tints the sheet surface instead of adding a solid colour.
+    -->
+    <color name="radio_banner_fill">#145B82FF</color>
+    <color name="radio_banner_stroke">#2E5B82FF</color>
 </resources>

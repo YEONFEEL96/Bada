@@ -5,10 +5,15 @@
  */
 package dev.bluehouse.bada.send
 
+import android.bluetooth.BluetoothAdapter
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import dev.bluehouse.bada.R
@@ -29,12 +34,18 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import dev.bluehouse.bada.discovery.diagnostics.DiagnosticLog as Log
 
-@Suppress("LongParameterList") // Every collaborator (UI, lifecycle, callbacks, sender id) is needed.
+@Suppress(
+    "LongParameterList", // Every collaborator (UI, lifecycle, callbacks, sender id) is needed.
+    "TooManyFunctions", // Discovery, BLE pulse, rendering, and the radio banners each add a few small phases.
+)
 internal class SendPeerPickerController(
     private val context: Context,
     private val peerList: ViewGroup,
     private val emptyState: TextView,
     private val networkHint: View,
+    /** Bluetooth-off banner container + its "Turn on" action (#290). */
+    private val bluetoothOffBanner: View,
+    private val bluetoothOffAction: View,
     private val subtitle: TextView,
     private val lifecycle: Lifecycle,
     private val scope: CoroutineScope,
@@ -60,6 +71,8 @@ internal class SendPeerPickerController(
      * reader backed by the system services; override in tests if needed.
      */
     private val radioStateReader: RadioStateReader = RadioStateReader(context),
+    /** Raises the system "turn on Bluetooth" request; wired by the hosting activity (#290). */
+    private val onEnableBluetoothRequested: () -> Unit = {},
 ) {
     /**
      * Binding-based convenience constructor — the UNCHANGED call site for the external
@@ -78,11 +91,14 @@ internal class SendPeerPickerController(
         logDiagnostic: (String) -> Unit,
         senderEndpointId: String,
         radioStateReader: RadioStateReader = RadioStateReader(context),
+        onEnableBluetoothRequested: () -> Unit = {},
     ) : this(
         context,
         binding.sendPeerList,
         binding.sendEmptyState,
         binding.sendNetworkHint,
+        binding.sendBluetoothOffBanner,
+        binding.sendBluetoothOffBannerAction,
         binding.sendSubtitle,
         lifecycle,
         scope,
@@ -91,6 +107,7 @@ internal class SendPeerPickerController(
         logDiagnostic,
         senderEndpointId,
         radioStateReader,
+        onEnableBluetoothRequested,
     )
 
     private val peers: MutableList<NearbyPeer> = mutableListOf()
@@ -121,6 +138,29 @@ internal class SendPeerPickerController(
      */
     private var lastRenderedRowSnapshot: List<RenderedRowSnapshot> = emptyList()
 
+    /**
+     * Follows the adapter while the picker is up so the Bluetooth-off
+     * banner (#290) drops the moment the user turns Bluetooth on, without
+     * waiting for the next resume.
+     */
+    private val bluetoothStateReceiver =
+        object : BroadcastReceiver() {
+            override fun onReceive(
+                context: Context,
+                intent: Intent,
+            ) {
+                if (intent.action == BluetoothAdapter.ACTION_STATE_CHANGED) updateBluetoothOffBanner()
+            }
+        }
+    private var bluetoothStateReceiverRegistered = false
+
+    init {
+        bluetoothOffAction.setOnClickListener {
+            logDiagnostic("radio: user asked to turn Bluetooth on from the picker banner")
+            onEnableBluetoothRequested()
+        }
+    }
+
     private data class RenderedRowSnapshot(
         val stableId: String,
         val title: String,
@@ -128,6 +168,8 @@ internal class SendPeerPickerController(
     )
 
     fun start() {
+        registerBluetoothStateReceiver()
+        updateBluetoothOffBanner()
         outboundPresenceJob?.cancel()
         outboundPresenceJob =
             scope.launch {
@@ -151,6 +193,7 @@ internal class SendPeerPickerController(
     }
 
     fun stop() {
+        unregisterBluetoothStateReceiver()
         outboundPresenceJob?.cancel()
         discoveryJob?.cancel()
         emptyPeerHintJob?.cancel()
@@ -503,8 +546,40 @@ internal class SendPeerPickerController(
      * status panel.
      */
     fun onRadioStateChanged() {
+        updateBluetoothOffBanner()
         if (discoveryJob == null) return
         updateEmptyPeerHintVisibility()
+    }
+
+    /**
+     * Bluetooth-off banner (#290). Unlike the empty-state text this does
+     * NOT depend on the peer list: one same-Wi-Fi peer is enough to fill
+     * the grid, yet every stock receiver that relies on BLE for discovery
+     * or for its name is still missing, and the user had no way to tell.
+     */
+    private fun updateBluetoothOffBanner() {
+        val show = SendRadioBanner.shouldShowBluetoothOff(radioStateReader.isBluetoothEnabled())
+        if (show && bluetoothOffBanner.visibility != View.VISIBLE) {
+            logDiagnostic("radio: bluetooth off while picking; showing enable banner peers=${peers.size}")
+        }
+        bluetoothOffBanner.visibility = if (show) View.VISIBLE else View.GONE
+    }
+
+    private fun registerBluetoothStateReceiver() {
+        if (bluetoothStateReceiverRegistered) return
+        ContextCompat.registerReceiver(
+            context,
+            bluetoothStateReceiver,
+            IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        bluetoothStateReceiverRegistered = true
+    }
+
+    private fun unregisterBluetoothStateReceiver() {
+        if (!bluetoothStateReceiverRegistered) return
+        runCatching { context.unregisterReceiver(bluetoothStateReceiver) }
+        bluetoothStateReceiverRegistered = false
     }
 
     @Suppress("MissingPermission")

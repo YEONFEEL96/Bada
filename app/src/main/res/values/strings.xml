@@ -346,6 +346,8 @@
          when one or both radios are unavailable (#209). -->
     <string name="send_empty_state_no_bt_no_wifi">No devices found. Turn on Bluetooth and connect to the same Wi-Fi network as the receiver, then make sure Quick Share is open on the receiver.</string>
     <string name="send_empty_state_no_bt">No devices found over Wi-Fi. Turn on Bluetooth to also reach devices not on this Wi-Fi network, and make sure Quick Share is open on the receiver.</string>
+    <string name="send_bluetooth_off_banner">Bluetooth is off. Quick Share devices may not be found, or may appear without a name.</string>
+    <string name="send_bluetooth_off_banner_action">Turn on</string>
     <string name="send_empty_state_no_wifi">No devices found. Connect both devices to the same Wi-Fi network for the most reliable discovery, and make sure Quick Share is open on the receiver.</string>
 
     <!-- Same-Wi-Fi-network hint card (#85). Surfaced after a few seconds

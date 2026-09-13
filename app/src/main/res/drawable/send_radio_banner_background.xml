@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Inline radio banner surface for the send picker (#290). A soft
+  brand-tinted plate with a 1dp tinted hairline at 16dp corners: one
+  step tighter than the 24dp sheet card it sits inside, so it reads
+  as a nested rounded box in the same family rather than a second
+  card. The fill is a low-alpha brand blue so it tints whatever the
+  sheet surface is in day or night mode without a second colour set.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <corners android:radius="16dp" />
+    <solid android:color="@color/radio_banner_fill" />
+    <stroke
+        android:width="1dp"
+        android:color="@color/radio_banner_stroke" />
+</shape>

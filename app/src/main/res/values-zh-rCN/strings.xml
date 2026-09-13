@@ -355,6 +355,8 @@
     <string name="settings_consent_style_sheet_needs_fsi">“仅底部面板”需要全屏权限才能在其他应用上方弹出面板。请在下一个屏幕中允许。</string>
     <string name="send_empty_state_no_bt_no_wifi">未找到设备。请打开蓝牙并连接到与接收方相同的 Wi-Fi 网络，然后确保接收方已打开 Quick Share。</string>
     <string name="send_empty_state_no_bt">未通过 Wi-Fi 找到设备。打开蓝牙可以发现不在此 Wi-Fi 网络中的设备，并请确保接收方已打开 Quick Share。</string>
+    <string name="send_bluetooth_off_banner">蓝牙已关闭。Quick Share 设备可能无法被发现，或不显示名称。</string>
+    <string name="send_bluetooth_off_banner_action">打开</string>
     <string name="send_empty_state_no_wifi">未找到设备。将两台设备连接到同一 Wi-Fi 网络可获得最可靠的发现效果，并请确保接收方已打开 Quick Share。</string>
     <string name="send_help_sheet_tap_title">碰一碰分享</string>
     <string name="send_help_sheet_tap_body">要通过碰一碰分享，请将两台手机背对背贴近。对方手机只需亮屏，无需打开应用。只能由一方碰一碰发送：如果对方也停留在发送界面，双方都无法接收，请让对方手机停留在主屏幕。</string>

@@ -240,6 +240,55 @@
                             android:layout_height="wrap_content"
                             android:orientation="vertical">
 
+                            <!--
+                              Bluetooth-off banner (#290). Raised whenever the adapter is off,
+                              regardless of whether any peer is already listed: stock Quick Share
+                              receivers carry their name only in the BLE fast advertisement and
+                              publish mDNS only after seeing a sender's BLE pulse, so a Wi-Fi-only
+                              scan silently misses them (or lists them nameless). The controller
+                              toggles visibility; the action raises the system enable request.
+                            -->
+                            <LinearLayout
+                                android:id="@+id/send_bluetooth_off_banner"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginStart="0dp"
+                                android:layout_marginEnd="0dp"
+                                android:layout_marginBottom="12dp"
+                                android:background="@drawable/send_radio_banner_background"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal"
+                                android:paddingStart="16dp"
+                                android:paddingEnd="12dp"
+                                android:paddingTop="10dp"
+                                android:paddingBottom="10dp"
+                                android:visibility="gone">
+
+                                <TextView
+                                    android:id="@+id/send_bluetooth_off_banner_text"
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:text="@string/send_bluetooth_off_banner"
+                                    android:lineSpacingExtra="2dp"
+                                    android:textColor="?android:attr/textColorPrimary"
+                                    android:textSize="14sp" />
+
+                                <Button
+                                    android:id="@+id/send_bluetooth_off_banner_action"
+                                    style="@style/Widget.Bada.Button"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginStart="12dp"
+                                    android:background="@drawable/btn_banner_action_background"
+                                    android:minHeight="40dp"
+                                    android:paddingStart="20dp"
+                                    android:paddingEnd="20dp"
+                                    android:text="@string/send_bluetooth_off_banner_action"
+                                    android:textColor="@color/brand_on_primary" />
+
+                            </LinearLayout>
+
                             <dev.bluehouse.bada.ui.sheet.FlowLayout
                                 android:id="@+id/send_peer_list"
                                 android:layout_width="match_parent"

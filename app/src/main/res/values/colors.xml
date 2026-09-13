@@ -153,4 +153,10 @@
          bullet appended to the "Check for updates" overflow item
          when UpdateRepository surfaces UpdateAvailable. -->
     <color name="update_badge_red">#FFE53935</color>
+    <!--
+      Send-picker radio banner (#290): low-alpha brand blue plate + hairline
+      so the box tints the sheet surface instead of adding a solid colour.
+    -->
+    <color name="radio_banner_fill">#0A0F62FE</color>
+    <color name="radio_banner_stroke">#1F0F62FE</color>
 </resources>

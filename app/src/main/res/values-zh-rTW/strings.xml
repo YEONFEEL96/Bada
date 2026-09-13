@@ -379,6 +379,8 @@
     <string name="settings_consent_style_sheet_needs_fsi">「僅底部面板」需要全螢幕權限才能在其他應用程式上方彈出面板。請在下一個畫面中允許。</string>
     <string name="send_empty_state_no_bt_no_wifi">未找到裝置。請開啟藍牙並連線到與接收端相同的 Wi-Fi 網路，然後確認接收端已開啟 Quick Share。</string>
     <string name="send_empty_state_no_bt">未透過 Wi-Fi 找到裝置。開啟藍牙即可找到不在此 Wi-Fi 網路中的裝置，並請確認接收端已開啟 Quick Share。</string>
+    <string name="send_bluetooth_off_banner">藍牙已關閉。Quick Share 裝置可能無法被找到，或不顯示名稱。</string>
+    <string name="send_bluetooth_off_banner_action">開啟</string>
     <string name="send_empty_state_no_wifi">未找到裝置。將兩台裝置連線到同一 Wi-Fi 網路可獲得最可靠的搜尋效果，並請確認接收端已開啟 Quick Share。</string>
     <string name="send_help_sheet_tap_title">輕碰分享</string>
     <string name="send_help_sheet_tap_body">要透過輕碰分享，請將兩台手機背對背靠攏。對方手機只需螢幕亮起，無需開啟應用程式。只能由一方輕碰傳送：如果對方也停留在傳送畫面，雙方都無法接收，請讓對方手機停留在主畫面。</string>

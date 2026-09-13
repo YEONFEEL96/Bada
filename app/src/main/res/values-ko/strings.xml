@@ -254,6 +254,8 @@
     <!-- Contextual empty-state variants (#209). -->
     <string name="send_empty_state_no_bt_no_wifi">기기를 찾지 못했습니다. Bluetooth를 켜고 받는 기기와 같은 Wi-Fi 네트워크에 연결한 후, 받는 기기에서 Quick Share가 열려 있는지 확인하세요.</string>
     <string name="send_empty_state_no_bt">Wi-Fi로 기기를 찾지 못했습니다. Bluetooth를 켜면 같은 Wi-Fi에 없는 기기도 검색할 수 있습니다. 받는 기기에서 Quick Share가 열려 있는지 확인하세요.</string>
+    <string name="send_bluetooth_off_banner">Bluetooth가 꺼져 있어 Quick Share 기기가 검색되지 않거나 이름 없이 표시될 수 있습니다.</string>
+    <string name="send_bluetooth_off_banner_action">켜기</string>
     <string name="send_empty_state_no_wifi">기기를 찾지 못했습니다. 두 기기를 같은 Wi-Fi 네트워크에 연결하면 더 안정적으로 검색할 수 있습니다. 받는 기기에서 Quick Share가 열려 있는지 확인하세요.</string>
 
     <!-- Same-Wi-Fi-network hint card (#85). -->

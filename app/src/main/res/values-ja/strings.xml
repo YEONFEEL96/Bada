@@ -382,6 +382,8 @@
     <string name="settings_consent_style_sheet_needs_fsi">「ボトムシートのみ」では、他のアプリの上にシートを表示するために全画面の権限が必要です。次の画面で許可してください。</string>
     <string name="send_empty_state_no_bt_no_wifi">端末が見つかりませんでした。Bluetooth をオンにして受信側と同じ Wi-Fi に接続し、受信側で Quick Share が開いているか確認してください。</string>
     <string name="send_empty_state_no_bt">Wi-Fi で端末が見つかりませんでした。Bluetooth をオンにすると同じ Wi-Fi にない端末にも届きます。受信側で Quick Share が開いているかも確認してください。</string>
+    <string name="send_bluetooth_off_banner">Bluetooth がオフです。Quick Share 端末が見つからないか、名前なしで表示されることがあります。</string>
+    <string name="send_bluetooth_off_banner_action">オンにする</string>
     <string name="send_empty_state_no_wifi">端末が見つかりませんでした。両方の端末を同じ Wi-Fi に接続すると最も確実に見つかります。受信側で Quick Share が開いているかも確認してください。</string>
     <string name="send_help_sheet_tap_title">タップで共有</string>
     <string name="send_help_sheet_tap_body">タップで共有するには、2 台の端末の背面同士を重ねてください。相手の端末は画面が点いていれば十分で、アプリを開く必要はありません。タップで送るのは片方だけです。相手も送信画面を開いているとどちらもタップを受け取れないため、相手の端末はホーム画面のままにしてください。</string>

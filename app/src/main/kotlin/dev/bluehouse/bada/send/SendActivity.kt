@@ -5,6 +5,7 @@
  */
 package dev.bluehouse.bada.send
 
+import android.bluetooth.BluetoothAdapter
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -286,6 +287,7 @@ public class SendActivity : AppCompatActivity() {
                 onPeersResolved = ::onSendPeersResolved,
                 logDiagnostic = ::logOutboundDiagnostic,
                 senderEndpointId = senderEndpointId,
+                onEnableBluetoothRequested = ::requestEnableBluetooth,
             )
 
         // Quick Share NFC tap-to-share reader. Reader-mode is toggled in
@@ -420,6 +422,22 @@ public class SendActivity : AppCompatActivity() {
         // (isFinishing == false) just unbinds and leaves the persisted,
         // re-entrant helper session for the new instance to re-prepare.
         shareRadios.restoreRadios(finishSession = isFinishing)
+    }
+
+    /**
+     * Bluetooth-off banner action (#290): hand the user the system enable
+     * dialog. Devices without the radio-helper cannot have the adapter
+     * switched on silently, so this is the only path that works everywhere.
+     * Any failure (missing BLUETOOTH_CONNECT grant on API 31+, OEM stub) is
+     * logged and swallowed; the banner simply stays up.
+     */
+    private fun requestEnableBluetooth() {
+        runCatching { startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)) }
+            .onFailure {
+                logOutboundDiagnostic(
+                    "radio: bluetooth enable request failed ${it::class.simpleName}: ${it.message}",
+                )
+            }
     }
 
     override fun onResume() {
