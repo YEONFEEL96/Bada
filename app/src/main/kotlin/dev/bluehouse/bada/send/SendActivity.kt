@@ -51,6 +51,7 @@ import dev.bluehouse.bada.discovery.bootstrap.BleL2capInitialControlClient
 import dev.bluehouse.bada.discovery.bootstrap.BluetoothClassicBootstrapClient
 import dev.bluehouse.bada.discovery.diagnostics.DiagnosticLog
 import dev.bluehouse.bada.discovery.medium.MediumRegistries
+import dev.bluehouse.bada.discovery.wifi.AndroidWifiCapabilities
 import dev.bluehouse.bada.nfc.BadaTapReader
 import dev.bluehouse.bada.nfc.NfcLinkHolder
 import dev.bluehouse.bada.nfc.NfcTapDiagnosticsPreferences
@@ -62,13 +63,16 @@ import dev.bluehouse.bada.protocol.connection.OutboundResult
 import dev.bluehouse.bada.protocol.connection.TransferProgress
 import dev.bluehouse.bada.protocol.endpoint.DeviceType
 import dev.bluehouse.bada.protocol.endpoint.EndpointInfo
+import dev.bluehouse.bada.protocol.medium.LocalWifiCapabilities
 import dev.bluehouse.bada.protocol.medium.Medium
+import dev.bluehouse.bada.protocol.medium.MediumRegistry
 import dev.bluehouse.bada.protocol.qr.DerivedQrKeys
 import dev.bluehouse.bada.protocol.qr.GeneratedQrKeyData
 import dev.bluehouse.bada.protocol.qr.QrKeyData
 import dev.bluehouse.bada.protocol.qr.QrKeyDerivation
 import dev.bluehouse.bada.protocol.qr.QrTlvMatcher
 import dev.bluehouse.bada.protocol.qr.QrUrl
+import dev.bluehouse.bada.protocol.transport.ConnectedTransport
 import dev.bluehouse.bada.service.radio.RadioHelperClient
 import dev.bluehouse.bada.service.radio.ShareRadioController
 import dev.bluehouse.bada.service.receiver.AdvertisedDeviceNames
@@ -615,6 +619,7 @@ public class SendActivity : AppCompatActivity() {
         useNearbyMultiplexInitialTransport: Boolean = false,
     ): OutboundConnection? {
         val mediumRegistry = MediumRegistries.defaultForContext(applicationContext)
+        val wifiCapabilities = AndroidWifiCapabilities.read(applicationContext)
         return when (route) {
             is NearbyPeerRoute.Lan ->
                 OutboundConnection(
@@ -626,6 +631,7 @@ public class SendActivity : AppCompatActivity() {
                     qrSigningKey = qrSigningKey,
                     mediumRegistry = mediumRegistry,
                     logger = ::logOutboundWireMessage,
+                    wifiCapabilities = wifiCapabilities,
                 )
             is NearbyPeerRoute.BluetoothClassic -> {
                 if (
@@ -642,14 +648,7 @@ public class SendActivity : AppCompatActivity() {
                     } finally {
                         bluetoothBootstrapClient = null
                     } ?: return null
-                OutboundConnection(
-                    transport = transport,
-                    endpointId = senderEndpointId,
-                    endpointInfo = endpointInfo,
-                    qrSigningKey = qrSigningKey,
-                    mediumRegistry = mediumRegistry,
-                    logger = ::logOutboundWireMessage,
-                )
+                bootstrapConnection(transport, endpointInfo, mediumRegistry, wifiCapabilities)
             }
             is NearbyPeerRoute.BleL2cap -> {
                 val client = BleL2capInitialControlClient(applicationContext)
@@ -660,14 +659,7 @@ public class SendActivity : AppCompatActivity() {
                     } finally {
                         bleL2capBootstrapClient = null
                     } ?: return null
-                OutboundConnection(
-                    transport = transport,
-                    endpointId = senderEndpointId,
-                    endpointInfo = endpointInfo,
-                    qrSigningKey = qrSigningKey,
-                    mediumRegistry = mediumRegistry,
-                    logger = ::logOutboundWireMessage,
-                )
+                bootstrapConnection(transport, endpointInfo, mediumRegistry, wifiCapabilities)
             }
             is NearbyPeerRoute.BleGatt -> {
                 val client = BleGattInitialControlClient(applicationContext)
@@ -678,17 +670,27 @@ public class SendActivity : AppCompatActivity() {
                     } finally {
                         bleGattBootstrapClient = null
                     } ?: return null
-                OutboundConnection(
-                    transport = transport,
-                    endpointId = senderEndpointId,
-                    endpointInfo = endpointInfo,
-                    qrSigningKey = qrSigningKey,
-                    mediumRegistry = mediumRegistry,
-                    logger = ::logOutboundWireMessage,
-                )
+                bootstrapConnection(transport, endpointInfo, mediumRegistry, wifiCapabilities)
             }
         }
     }
+
+    /** [OutboundConnection] over an already-connected off-LAN bootstrap transport. */
+    private fun bootstrapConnection(
+        transport: ConnectedTransport,
+        endpointInfo: ByteArray,
+        mediumRegistry: MediumRegistry,
+        wifiCapabilities: LocalWifiCapabilities,
+    ): OutboundConnection =
+        OutboundConnection(
+            transport = transport,
+            endpointId = senderEndpointId,
+            endpointInfo = endpointInfo,
+            qrSigningKey = qrSigningKey,
+            mediumRegistry = mediumRegistry,
+            logger = ::logOutboundWireMessage,
+            wifiCapabilities = wifiCapabilities,
+        )
 
     private suspend fun buildOutboundConnection(
         plan: SendBootstrapPlan,

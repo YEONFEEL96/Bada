@@ -14,6 +14,7 @@ import com.google.location.nearby.connections.proto.OfflineWireFormatsProto.Medi
 import com.google.location.nearby.connections.proto.OfflineWireFormatsProto.OfflineFrame
 import com.google.location.nearby.connections.proto.OfflineWireFormatsProto.V1Frame
 import com.google.protobuf.ByteString
+import dev.bluehouse.bada.protocol.medium.LocalWifiCapabilities
 import dev.bluehouse.bada.protocol.medium.Medium
 import dev.bluehouse.bada.protocol.medium.UpgradePathCredentials
 
@@ -91,11 +92,14 @@ public object BandwidthUpgradeFrames {
      * role and answers with `UPGRADE_PATH_AVAILABLE` if it can stand up
      * one of the requested mediums.
      */
-    public fun upgradePathRequest(requestedMediums: Set<Medium>): OfflineFrame {
+    public fun upgradePathRequest(
+        requestedMediums: Set<Medium>,
+        wifiCapabilities: LocalWifiCapabilities = LocalWifiCapabilities.Unknown,
+    ): OfflineFrame {
         val request =
             UpgradePathInfo.UpgradePathRequest
                 .newBuilder()
-                .setMediumMetaData(defaultUpgradeRequestMetadata(requestedMediums))
+                .setMediumMetaData(upgradeRequestMetadata(requestedMediums, wifiCapabilities))
         requestedMediums
             .map { it.toUpgradePathMedium() }
             .sortedBy { it.number }
@@ -596,9 +600,21 @@ public object BandwidthUpgradeFrames {
         return builder.build()
     }
 
-    private fun defaultUpgradeRequestMetadata(requestedMediums: Set<Medium>): MediumMetadata =
+    /**
+     * Band support and STA frequency ride along on the request so the
+     * receiver-side group owner can form the Wi-Fi Direct group on 5 GHz
+     * next to our AP channel (#287); the Wi-Fi Direct role/auth fields
+     * match what stock senders advertise.
+     */
+    private fun upgradeRequestMetadata(
+        requestedMediums: Set<Medium>,
+        wifiCapabilities: LocalWifiCapabilities,
+    ): MediumMetadata =
         MediumMetadata
             .newBuilder()
+            .setSupports5Ghz(wifiCapabilities.supports5Ghz)
+            .setSupports6Ghz(wifiCapabilities.supports6Ghz)
+            .setApFrequency(wifiCapabilities.frequencyOrNotSet)
             .also { builder ->
                 if (Medium.WIFI_DIRECT in requestedMediums) {
                     builder.addSupportedWifiDirectAuthTypes(

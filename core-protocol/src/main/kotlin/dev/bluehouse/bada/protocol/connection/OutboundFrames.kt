@@ -15,6 +15,7 @@ import com.google.location.nearby.connections.proto.OfflineWireFormatsProto.OsIn
 import com.google.location.nearby.connections.proto.OfflineWireFormatsProto.V1Frame
 import com.google.protobuf.ByteString
 import dev.bluehouse.bada.protocol.endpoint.EndpointInfo
+import dev.bluehouse.bada.protocol.medium.LocalWifiCapabilities
 import dev.bluehouse.bada.protocol.medium.Medium
 
 /**
@@ -60,6 +61,7 @@ internal object OutboundFrames {
         endpointInfo: ByteArray,
         supportedMediums: Set<Medium> = setOf(Medium.WIFI_LAN),
         nonce: Int = 0,
+        wifiCapabilities: LocalWifiCapabilities = LocalWifiCapabilities.Unknown,
     ): OfflineFrame {
         // Match NearDrop's ConnectionRequestFrame shape. Stock Quick Share
         // closes the socket immediately if these fields are absent — only
@@ -93,7 +95,7 @@ internal object OutboundFrames {
                 .setEndpointName(endpointName)
                 .setEndpointInfo(ByteString.copyFrom(endpointInfo))
                 .setNonce(nonce)
-                .setMediumMetadata(defaultMediumMetadata(supportedMediums))
+                .setMediumMetadata(mediumMetadata(supportedMediums, wifiCapabilities))
                 .setKeepAliveIntervalMillis(KEEP_ALIVE_INTERVAL_MILLIS)
                 .setKeepAliveTimeoutMillis(KEEP_ALIVE_TIMEOUT_MILLIS)
                 .setConnectionsDevice(
@@ -144,21 +146,26 @@ internal object OutboundFrames {
     private const val KEEP_ALIVE_TIMEOUT_MILLIS: Int = 600_000
 
     /**
-     * Minimal stock-shaped medium metadata for the opening request.
+     * Stock-shaped medium metadata for the opening request.
      *
      * Android's public Nearby stack always includes this sub-message on
-     * `ConnectionRequestFrame`; richer Android-only callers can thread
-     * precise AP/BSSID/channel data later, but setting the sub-message
-     * here keeps the field-shape compatible without introducing
-     * `android.*` dependencies into `:core-protocol`.
+     * `ConnectionRequestFrame`. The band flags and `ap_frequency` matter:
+     * a stock receiver that later forms a Wi-Fi Direct group for us reads
+     * them to choose the group's band and channel, and the historical
+     * all-false shape pinned Samsung group owners to 2.4 GHz (#287). The
+     * values come from [wifiCapabilities] so `:core-protocol` stays free of
+     * `android.*`; callers that know nothing pass [LocalWifiCapabilities.Unknown].
      */
-    private fun defaultMediumMetadata(supportedMediums: Set<Medium>): MediumMetadata =
+    private fun mediumMetadata(
+        supportedMediums: Set<Medium>,
+        wifiCapabilities: LocalWifiCapabilities,
+    ): MediumMetadata =
         MediumMetadata
             .newBuilder()
-            .setSupports5Ghz(false)
-            .setSupports6Ghz(false)
+            .setSupports5Ghz(wifiCapabilities.supports5Ghz)
+            .setSupports6Ghz(wifiCapabilities.supports6Ghz)
             .setMobileRadio(false)
-            .setApFrequency(-1)
+            .setApFrequency(wifiCapabilities.frequencyOrNotSet)
             .also { builder ->
                 if (Medium.WIFI_DIRECT in supportedMediums) {
                     builder.addSupportedWifiDirectAuthTypes(

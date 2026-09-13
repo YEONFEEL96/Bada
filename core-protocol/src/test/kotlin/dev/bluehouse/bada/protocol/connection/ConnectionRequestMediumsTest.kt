@@ -12,6 +12,7 @@ import com.google.location.nearby.connections.proto.OfflineWireFormatsProto.Medi
 import com.google.location.nearby.connections.proto.OfflineWireFormatsProto.OfflineFrame
 import dev.bluehouse.bada.protocol.endpoint.DeviceType
 import dev.bluehouse.bada.protocol.endpoint.EndpointInfo
+import dev.bluehouse.bada.protocol.medium.LocalWifiCapabilities
 import dev.bluehouse.bada.protocol.medium.Medium
 import org.junit.jupiter.api.Test
 
@@ -33,6 +34,48 @@ class ConnectionRequestMediumsTest {
         val frame = OutboundFrames.connectionRequest("ABCD", ByteArray(0))
         val mediums = parseRequest(frame).mediumsList.map { it.number }
         assertThat(mediums).containsExactly(Medium.WIFI_LAN.wireNumber)
+    }
+
+    @Test
+    fun `default ConnectionRequest advertises no band support and no AP frequency`() {
+        val metadata = parseRequest(OutboundFrames.connectionRequest("ABCD", ByteArray(0))).mediumMetadata
+        assertThat(metadata.supports5Ghz).isFalse()
+        assertThat(metadata.supports6Ghz).isFalse()
+        assertThat(metadata.apFrequency).isEqualTo(LocalWifiCapabilities.FREQUENCY_NOT_SET)
+    }
+
+    @Test
+    fun `local Wi-Fi capabilities reach medium_metadata`() {
+        // #287: a stock group owner reads these to pick the Wi-Fi Direct band
+        // and channel for us; advertising nothing pinned it to 2.4 GHz.
+        val frame =
+            OutboundFrames.connectionRequest(
+                endpointId = "ABCD",
+                endpointInfo = ByteArray(0),
+                wifiCapabilities =
+                    LocalWifiCapabilities(
+                        supports5Ghz = true,
+                        supports6Ghz = true,
+                        staFrequencyMhz = 5_745,
+                    ),
+            )
+        val metadata = parseRequest(frame).mediumMetadata
+        assertThat(metadata.supports5Ghz).isTrue()
+        assertThat(metadata.supports6Ghz).isTrue()
+        assertThat(metadata.apFrequency).isEqualTo(5_745)
+    }
+
+    @Test
+    fun `unknown STA frequency is advertised as the not-set sentinel`() {
+        val frame =
+            OutboundFrames.connectionRequest(
+                endpointId = "ABCD",
+                endpointInfo = ByteArray(0),
+                wifiCapabilities = LocalWifiCapabilities(supports5Ghz = true, staFrequencyMhz = null),
+            )
+        val metadata = parseRequest(frame).mediumMetadata
+        assertThat(metadata.supports5Ghz).isTrue()
+        assertThat(metadata.apFrequency).isEqualTo(LocalWifiCapabilities.FREQUENCY_NOT_SET)
     }
 
     @Test

@@ -13,6 +13,7 @@ import dev.bluehouse.bada.protocol.crypto.D2DKeyDerivation
 import dev.bluehouse.bada.protocol.crypto.D2DRole
 import dev.bluehouse.bada.protocol.crypto.pin.PinDerivation
 import dev.bluehouse.bada.protocol.crypto.securemessage.SecureChannel
+import dev.bluehouse.bada.protocol.medium.LocalWifiCapabilities
 import dev.bluehouse.bada.protocol.medium.Medium
 import dev.bluehouse.bada.protocol.medium.MediumRegistry
 import dev.bluehouse.bada.protocol.payload.PayloadAssembler
@@ -102,6 +103,13 @@ internal class OutboundConnectionDriver(
      * [TransferProgress] so the sender UI can render rate + ETA.
      */
     private val rateEstimator: TransferRateEstimator = TransferRateEstimator(),
+    /**
+     * What our Wi-Fi radio can do, advertised in every `MediumMetadata` we
+     * send and as the STA frequency hint on `SAFE_TO_CLOSE_PRIOR_CHANNEL`
+     * so a stock group owner forms the Wi-Fi Direct group on 5 GHz next to
+     * our AP channel instead of defaulting to 2.4 GHz (#287).
+     */
+    private val wifiCapabilities: LocalWifiCapabilities = LocalWifiCapabilities.Unknown,
 ) {
     private var framedConnection: FramedConnection? = null
     private var secureChannel: SecureChannel? = null
@@ -310,12 +318,17 @@ internal class OutboundConnectionDriver(
         // request shape.
         val advertisedMediums = advertisedMediumsForInitialTransport()
         logger("step 1: advertising mediums=$advertisedMediums")
+        logger(
+            "step 1: wifi capabilities supports5Ghz=${wifiCapabilities.supports5Ghz} " +
+                "supports6Ghz=${wifiCapabilities.supports6Ghz} staFrequency=${wifiCapabilities.frequencyOrNotSet}",
+        )
         transport.sendFrame(
             OutboundFrames
                 .connectionRequest(
                     endpointId = endpointId,
                     endpointInfo = endpointInfo,
                     supportedMediums = advertisedMediums,
+                    wifiCapabilities = wifiCapabilities,
                 ).toByteArray(),
         )
         logger("step 1: sent ConnectionRequest, probing pre-UKEY2 upgrade")
@@ -423,6 +436,7 @@ internal class OutboundConnectionDriver(
                             mediumRegistry = mediumRegistry,
                             endpointId = endpointId,
                             logger = logger,
+                            staFrequencyMhz = wifiCapabilities.frequencyOrNotSet,
                         )
                     if (requiresWifiDirect && transport.medium != Medium.WIFI_DIRECT) {
                         return BandwidthNegotiation.Failed(
@@ -807,7 +821,7 @@ internal class OutboundConnectionDriver(
                 // that freshly upgraded channel would invite the receiver to
                 // tear down a working group mid-consent (#258).
                 activeChannel.sendOfflineFrame(
-                    BandwidthUpgradeFrames.upgradePathRequest(setOf(Medium.WIFI_DIRECT)),
+                    BandwidthUpgradeFrames.upgradePathRequest(setOf(Medium.WIFI_DIRECT), wifiCapabilities),
                 )
                 upgradeRequestSentAtMillis = nowMillisSource()
                 logger("medium-upgrade: requested receiver Wi-Fi Direct upgrade (bootstrap=$activeMedium)")
@@ -1087,7 +1101,7 @@ internal class OutboundConnectionDriver(
         }
         if (upgradeRequired) {
             channel.sendOfflineFrame(
-                BandwidthUpgradeFrames.upgradePathRequest(setOf(Medium.WIFI_DIRECT)),
+                BandwidthUpgradeFrames.upgradePathRequest(setOf(Medium.WIFI_DIRECT), wifiCapabilities),
             )
             logger("medium-upgrade: requested receiver Wi-Fi Direct upgrade before streaming payloads")
         }
@@ -1255,6 +1269,7 @@ internal class OutboundConnectionDriver(
                 mediumRegistry = mediumRegistry,
                 endpointId = endpointId,
                 logger = logger,
+                staFrequencyMhz = wifiCapabilities.frequencyOrNotSet,
             )
         secureChannel = upgraded.channel
         return upgraded

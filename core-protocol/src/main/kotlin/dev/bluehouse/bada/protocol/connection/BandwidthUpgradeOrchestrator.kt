@@ -238,7 +238,7 @@ internal object BandwidthUpgradeOrchestrator {
         )
     }
 
-    @Suppress("ReturnCount")
+    @Suppress("ReturnCount", "LongParameterList") // Mirrors the server twin; the STA hint is optional.
     suspend fun runClientUpgradeFromOffer(
         oldChannel: SecureChannel,
         currentMedium: Medium,
@@ -246,6 +246,7 @@ internal object BandwidthUpgradeOrchestrator {
         mediumRegistry: MediumRegistry,
         endpointId: String,
         logger: (String) -> Unit,
+        staFrequencyMhz: Int = BandwidthUpgradeFrames.STA_FREQUENCY_NOT_SET,
     ): ActiveTransportChannel {
         val credentials =
             decodeOfferCredentials(offer) ?: run {
@@ -282,6 +283,7 @@ internal object BandwidthUpgradeOrchestrator {
                 expectsClientIntroductionAck = expectsClientIntroductionAck,
                 onPriorChannelTeardown = { priorChannelTeardownBegan = true },
                 logger = logger,
+                staFrequencyMhz = staFrequencyMhz,
             )
         }.getOrElse { failure ->
             logger(
@@ -313,6 +315,7 @@ internal object BandwidthUpgradeOrchestrator {
         expectsClientIntroductionAck: Boolean,
         onPriorChannelTeardown: () -> Unit,
         logger: (String) -> Unit,
+        staFrequencyMhz: Int,
     ): ActiveTransportChannel {
         val bufferedFrames = mutableListOf<OfflineFrame>()
         val newFramedConnection = transport.asFramedConnection()
@@ -338,6 +341,7 @@ internal object BandwidthUpgradeOrchestrator {
             reader = reader,
             bufferedFrames = bufferedFrames,
             logger = logger,
+            staFrequencyMhz = staFrequencyMhz,
         )
         reader.drainAvailableFrames(
             stage = "client post-safe-to-close",
@@ -357,6 +361,7 @@ internal object BandwidthUpgradeOrchestrator {
         reader: DualChannelFrameReader,
         bufferedFrames: MutableList<OfflineFrame>,
         logger: (String) -> Unit,
+        staFrequencyMhz: Int,
     ) {
         oldChannel.sendOfflineFrame(BandwidthUpgradeFrames.lastWriteToPriorChannel())
         receiveAndCheckUpgradeFrame(
@@ -366,7 +371,7 @@ internal object BandwidthUpgradeOrchestrator {
             applicationFrames = bufferedFrames,
             logger = logger,
         )
-        oldChannel.sendOfflineFrame(BandwidthUpgradeFrames.safeToClosePriorChannel())
+        oldChannel.sendOfflineFrame(BandwidthUpgradeFrames.safeToClosePriorChannel(staFrequencyMhz))
         receiveAndCheckUpgradeFrame(
             reader = reader,
             expected = BandwidthUpgradeNegotiationFrame.EventType.SAFE_TO_CLOSE_PRIOR_CHANNEL,

@@ -11,6 +11,7 @@ import com.google.location.nearby.connections.proto.OfflineWireFormatsProto.Band
 import com.google.location.nearby.connections.proto.OfflineWireFormatsProto.MediumMetadata
 import com.google.location.nearby.connections.proto.OfflineWireFormatsProto.OfflineFrame
 import com.google.location.nearby.connections.proto.OfflineWireFormatsProto.V1Frame
+import dev.bluehouse.bada.protocol.medium.LocalWifiCapabilities
 import dev.bluehouse.bada.protocol.medium.Medium
 import dev.bluehouse.bada.protocol.medium.UpgradePathCredentials
 import org.junit.jupiter.api.Test
@@ -50,6 +51,44 @@ class BandwidthUpgradeFramesTest {
         assertThat(parsed.upgradePathInfo.supportsClientIntroductionAck).isTrue()
         assertThat(parsed.upgradePathInfo.medium.number).isEqualTo(Medium.WIFI_DIRECT.wireNumber)
         assertThat(parsed.upgradePathInfo.hasWifiLanSocket()).isFalse()
+    }
+
+    @Test
+    fun `upgradePathRequest advertises local band support and STA frequency`() {
+        // #287: the receiver-side group owner reads these to form the
+        // Wi-Fi Direct group on 5 GHz next to our AP channel.
+        val frame =
+            BandwidthUpgradeFrames.upgradePathRequest(
+                setOf(Medium.WIFI_DIRECT),
+                LocalWifiCapabilities(supports5Ghz = true, supports6Ghz = false, staFrequencyMhz = 5_745),
+            )
+        val metadata =
+            OfflineFrame
+                .parseFrom(
+                    frame.toByteArray(),
+                ).v1.bandwidthUpgradeNegotiation.upgradePathInfo.upgradePathRequest.mediumMetaData
+        assertThat(metadata.supports5Ghz).isTrue()
+        assertThat(metadata.supports6Ghz).isFalse()
+        assertThat(metadata.apFrequency).isEqualTo(5_745)
+    }
+
+    @Test
+    fun `upgradePathRequest without capabilities keeps the legacy no-band shape`() {
+        val frame = BandwidthUpgradeFrames.upgradePathRequest(setOf(Medium.WIFI_DIRECT))
+        val metadata =
+            OfflineFrame
+                .parseFrom(
+                    frame.toByteArray(),
+                ).v1.bandwidthUpgradeNegotiation.upgradePathInfo.upgradePathRequest.mediumMetaData
+        assertThat(metadata.supports5Ghz).isFalse()
+        assertThat(metadata.apFrequency).isEqualTo(LocalWifiCapabilities.FREQUENCY_NOT_SET)
+    }
+
+    @Test
+    fun `safeToClosePriorChannel carries an explicit STA frequency`() {
+        val frame = BandwidthUpgradeFrames.safeToClosePriorChannel(staFrequency = 5_220)
+        val parsed = OfflineFrame.parseFrom(frame.toByteArray()).v1.bandwidthUpgradeNegotiation
+        assertThat(parsed.safeToClosePriorChannel.staFrequency).isEqualTo(5_220)
     }
 
     @Test

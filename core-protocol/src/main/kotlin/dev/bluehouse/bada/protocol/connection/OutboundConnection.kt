@@ -5,6 +5,7 @@
  */
 package dev.bluehouse.bada.protocol.connection
 
+import dev.bluehouse.bada.protocol.medium.LocalWifiCapabilities
 import dev.bluehouse.bada.protocol.medium.Medium
 import dev.bluehouse.bada.protocol.medium.MediumRegistry
 import dev.bluehouse.bada.protocol.medium.NearbyMultiplexClientTransport
@@ -193,6 +194,8 @@ public class OutboundConnection private constructor(
      * touches `android.util.Log`.
      */
     private val logger: (String) -> Unit = {},
+    /** Local Wi-Fi band support / STA frequency advertised to the peer (#287). */
+    private val wifiCapabilities: LocalWifiCapabilities = LocalWifiCapabilities.Unknown,
 ) {
     public constructor(
         targetAddress: InetAddress,
@@ -207,6 +210,7 @@ public class OutboundConnection private constructor(
         secureRandom: SecureRandom = SecureRandom(),
         mediumRegistry: MediumRegistry = MediumRegistry.DefaultWifiLan,
         logger: (String) -> Unit = {},
+        wifiCapabilities: LocalWifiCapabilities = LocalWifiCapabilities.Unknown,
     ) : this(
         targetAddress = targetAddress,
         port = port,
@@ -221,6 +225,7 @@ public class OutboundConnection private constructor(
         secureRandom = secureRandom,
         mediumRegistry = mediumRegistry,
         logger = logger,
+        wifiCapabilities = wifiCapabilities,
     )
 
     public constructor(
@@ -234,6 +239,7 @@ public class OutboundConnection private constructor(
         secureRandom: SecureRandom = SecureRandom(),
         mediumRegistry: MediumRegistry = MediumRegistry.DefaultWifiLan,
         logger: (String) -> Unit = {},
+        wifiCapabilities: LocalWifiCapabilities = LocalWifiCapabilities.Unknown,
     ) : this(
         targetAddress = null,
         port = null,
@@ -248,6 +254,7 @@ public class OutboundConnection private constructor(
         secureRandom = secureRandom,
         mediumRegistry = mediumRegistry,
         logger = logger,
+        wifiCapabilities = wifiCapabilities,
     )
 
     private val mutableState: MutableStateFlow<OutboundConnectionState> =
@@ -419,6 +426,7 @@ public class OutboundConnection private constructor(
                 logger = logger,
                 initialHandshakeTimeoutMillis = initialHandshakeTimeoutMillis,
                 remoteAcceptanceTimeoutMillis = remoteAcceptanceTimeoutMillis,
+                wifiCapabilities = wifiCapabilities,
             )
 
         return try {

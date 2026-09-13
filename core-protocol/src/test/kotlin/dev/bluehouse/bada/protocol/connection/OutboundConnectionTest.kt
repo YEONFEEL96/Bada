@@ -17,6 +17,7 @@ import dev.bluehouse.bada.protocol.crypto.D2DRole
 import dev.bluehouse.bada.protocol.crypto.securemessage.SecureChannel
 import dev.bluehouse.bada.protocol.endpoint.DeviceType
 import dev.bluehouse.bada.protocol.endpoint.EndpointInfo
+import dev.bluehouse.bada.protocol.medium.LocalWifiCapabilities
 import dev.bluehouse.bada.protocol.medium.Medium
 import dev.bluehouse.bada.protocol.medium.MediumLadder
 import dev.bluehouse.bada.protocol.medium.MediumProvider
@@ -1413,6 +1414,49 @@ class OutboundConnectionTest {
                     assertThat(logs).contains("step 1: advertising mediums=[WIFI_LAN]")
                 } finally {
                     runCatching { wire.close() }
+                }
+            }
+        }
+
+    @Test
+    fun `sender advertises its Wi-Fi band support and STA frequency in the ConnectionRequest`() =
+        runBlocking {
+            withTimeout(WALLCLOCK_TIMEOUT_MS) {
+                val (port, accept) = listenAndAcceptInBackground()
+                val outbound =
+                    OutboundConnection(
+                        targetAddress = InetAddress.getLoopbackAddress(),
+                        port = port,
+                        secureRandom = SecureRandom("outbound-wifi-caps".toByteArray()),
+                        initialHandshakeTimeoutMillis = SHORT_INITIAL_HANDSHAKE_TIMEOUT_MS,
+                        wifiCapabilities =
+                            LocalWifiCapabilities(
+                                supports5Ghz = true,
+                                supports6Ghz = true,
+                                staFrequencyMhz = 5_745,
+                            ),
+                    )
+
+                coroutineScope {
+                    val outboundJob = async { outbound.run(emptyList()) }
+                    val wire = FramedConnection(accept())
+                    try {
+                        val request =
+                            OfflineFrame
+                                .parseFrom(wire.receiveFrame())
+                                .v1
+                                .connectionRequest
+                        // #287: a stock receiver forming the Wi-Fi Direct group
+                        // for us picks the band from these fields.
+                        assertThat(request.mediumMetadata.supports5Ghz).isTrue()
+                        assertThat(request.mediumMetadata.supports6Ghz).isTrue()
+                        assertThat(request.mediumMetadata.apFrequency).isEqualTo(5_745)
+
+                        wire.close()
+                        assertThat(outboundJob.await()).isInstanceOf(OutboundResult.Failed::class.java)
+                    } finally {
+                        runCatching { wire.close() }
+                    }
                 }
             }
         }
