@@ -88,4 +88,7 @@
     -->
     <color name="radio_banner_fill">#145B82FF</color>
     <color name="radio_banner_stroke">#2E5B82FF</color>
+    <!-- Settings master switch ON plate (#239): lighter brand tint on the dark chip surface. -->
+    <color name="master_on_fill">#2E5B82FF</color>
+    <color name="master_on_stroke">#4D5B82FF</color>
 </resources>

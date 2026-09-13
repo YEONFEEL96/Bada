@@ -393,6 +393,9 @@
     <string name="nfc_tap_hce_service_description">Bada Quick Share タップ共有</string>
     <string name="nfc_hce_service_description">Bada NFC リンク</string>
     <string name="nfc_namecard_hce_service_description">Bada ネームカード</string>
+    <string name="settings_master_on">Bada はオン</string>
+    <string name="settings_master_off">Bada はオフ</string>
+    <string name="main_master_off_caption">Bada はオフです。ファイルを受信するには設定でオンにしてください。</string>
     <string name="settings_name_card_row_title">ネームカード</string>
     <string name="settings_name_card_row_subtitle">端末同士を重ねて共有する連絡先カードを設定します</string>
     <string name="name_card_activity_label">ネームカード</string>

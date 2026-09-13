@@ -36,6 +36,7 @@ import dev.bluehouse.bada.consent.FullScreenIntentPreferences
 import dev.bluehouse.bada.onboarding.PermissionRequirements
 import dev.bluehouse.bada.onboarding.PermissionsOnboardingActivity
 import dev.bluehouse.bada.service.receiver.ReceiverForegroundService
+import dev.bluehouse.bada.service.receiver.ReceiverMasterSwitch
 import dev.bluehouse.bada.ui.CreditActivity
 import dev.bluehouse.bada.ui.ElasticBottomNavigationView
 import dev.bluehouse.bada.ui.SendReceiveFragment
@@ -427,7 +428,10 @@ class MainActivity : AppCompatActivity() {
         // POST_NOTIFICATIONS, BleQuickShareScanner.start() and the
         // mDNS publish path each re-check their own permissions
         // internally and gracefully no-op rather than crash.
-        ReceiverForegroundService.start(this)
+        // Master switch (#239): an explicit off must survive reopening the app.
+        if (ReceiverMasterSwitch.isEnabled(this)) {
+            ReceiverForegroundService.start(this)
+        }
 
         // First-launch prompts (#47 battery, full-screen-intent). Show at
         // most one per onStart so the user never faces stacked dialogs:

@@ -366,6 +366,9 @@
     <string name="nfc_tap_hce_service_description">Bada Quick Share 碰一碰分享</string>
     <string name="nfc_hce_service_description">Bada NFC 链接</string>
     <string name="nfc_namecard_hce_service_description">Bada 名片</string>
+    <string name="settings_master_on">Bada 已开启</string>
+    <string name="settings_master_off">Bada 已关闭</string>
+    <string name="main_master_off_caption">Bada 已关闭。要接收文件，请在设置中开启。</string>
     <string name="settings_name_card_row_title">名片</string>
     <string name="settings_name_card_row_subtitle">设置手机碰一碰时分享的联系人名片</string>
     <string name="name_card_activity_label">名片</string>

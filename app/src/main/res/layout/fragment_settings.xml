@@ -49,6 +49,46 @@
         android:paddingTop="8dp"
         android:paddingBottom="@dimen/settings_content_bottom_padding">
 
+        <!-- ============ Master switch (#239) ============
+             settings_master_row — 60dp pill that turns Bada's receive side on
+             or off. Off stops the receiver foreground service so the device is
+             no longer discoverable; on starts it again. The whole row toggles;
+             the SwitchCompat is the visual state and the background swaps
+             between the tinted ON and neutral OFF plates. Wired in SettingsFragment. -->
+        <LinearLayout
+            android:id="@+id/settings_master_row"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:layout_marginBottom="16dp"
+            android:background="@drawable/settings_master_off_background"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="24dp"
+            android:paddingEnd="16dp">
+
+            <TextView
+                android:id="@+id/settings_master_label"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/settings_master_on"
+                android:textColor="?android:attr/textColorPrimary"
+                android:textSize="17sp"
+                android:textStyle="bold" />
+
+            <androidx.appcompat.widget.SwitchCompat
+                android:id="@+id/settings_master_switch"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:clickable="false"
+                android:focusable="false" />
+
+        </LinearLayout>
+
+
         <!-- ============ Card 0: Name Card (tap-to-share contacts) ============
              settings_name_card_row — clickable card (title "Name Card" + subtitle
              + a "›" chevron) that opens NameCardSetupActivity, the My Name Card

@@ -38,6 +38,7 @@ import dev.bluehouse.bada.R
 import dev.bluehouse.bada.migration.LegacyPackageDetectorAndroid
 import dev.bluehouse.bada.send.SendActivityInApp
 import dev.bluehouse.bada.service.receiver.MdnsVisibilityOverrideHolder
+import dev.bluehouse.bada.service.receiver.ReceiverMasterSwitch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -265,6 +266,18 @@ internal class SendReceiveFragment : Fragment(R.layout.fragment_send_receive) {
         caption: TextView,
         pulse: VisibilityPulseView,
     ) {
+        // Master switch (#239): nothing is advertised while Bada is off, so
+        // the visibility pill is inert and the caption says why.
+        val masterOn = ReceiverMasterSwitch.isEnabled(button.context)
+        button.isEnabled = masterOn
+        button.alpha = if (masterOn) 1f else DISABLED_PILL_ALPHA
+        if (!masterOn) {
+            button.setBackgroundResource(R.drawable.btn_frosted_background)
+            button.setText(R.string.main_always_visible_off_title)
+            caption.setText(R.string.main_master_off_caption)
+            pulse.stopPulse()
+            return
+        }
         val active = MdnsVisibilityOverrideHolder.isActive
         if (active) {
             button.setBackgroundResource(R.drawable.btn_visibility_on_background)
@@ -717,6 +730,8 @@ internal class SendReceiveFragment : Fragment(R.layout.fragment_send_receive) {
     }
 
     private companion object {
+        /** Visibility pill alpha while the master switch is off (#239). */
+        private const val DISABLED_PILL_ALPHA = 0.5f
         const val TAG = "BadaMain"
 
         // Polaroid preview tunables. The query limit is intentionally

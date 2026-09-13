@@ -96,7 +96,10 @@ private class FakeEditor(
     override fun putBoolean(
         key: String?,
         value: Boolean,
-    ): SharedPreferences.Editor = throw UnsupportedOperationException()
+    ): SharedPreferences.Editor =
+        apply {
+            values[key.orEmpty()] = value
+        }
 
     override fun remove(key: String?): SharedPreferences.Editor =
         apply {

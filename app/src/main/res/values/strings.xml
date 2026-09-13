@@ -594,6 +594,9 @@
          tap (proprietary AID F0534443415244). -->
     <string name="nfc_namecard_hce_service_description">Bada Name Card</string>
     <!-- Settings row that opens the Name Card setup screen. -->
+    <string name="settings_master_on">Bada is on</string>
+    <string name="settings_master_off">Bada is off</string>
+    <string name="main_master_off_caption">Bada is off. Turn it on in Settings to receive files.</string>
     <string name="settings_name_card_row_title">Name Card</string>
     <string name="settings_name_card_row_subtitle">Set up the contact card you share by tapping phones</string>
     <!-- NameCardSetupActivity (the setup page) -->

@@ -409,6 +409,9 @@
     <string name="nfc_tap_hce_service_description">Bada Quick Share 탭 공유</string>
     <string name="nfc_hce_service_description">Bada NFC 링크</string>
     <string name="nfc_namecard_hce_service_description">Bada 네임 카드</string>
+    <string name="settings_master_on">Bada 사용 중</string>
+    <string name="settings_master_off">Bada 사용 안 함</string>
+    <string name="main_master_off_caption">Bada가 꺼져 있습니다. 파일을 받으려면 설정에서 켜세요.</string>
     <string name="settings_name_card_row_title">네임 카드</string>
     <string name="settings_name_card_row_subtitle">폰을 맞대어 공유할 연락처 카드를 설정합니다</string>
     <string name="name_card_activity_label">네임 카드</string>

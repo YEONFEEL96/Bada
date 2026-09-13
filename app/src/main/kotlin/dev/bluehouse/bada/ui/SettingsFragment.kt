@@ -17,10 +17,14 @@ import android.widget.Toast
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.widget.SwitchCompat
+import androidx.core.content.ContextCompat
+import androidx.core.content.res.use
+import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
 import dev.bluehouse.bada.BadaApplication
 import dev.bluehouse.bada.MainActivity
 import dev.bluehouse.bada.R
+import dev.bluehouse.bada.UserFacingFeatures
 import dev.bluehouse.bada.battery.BatteryOptimizationOemHelper
 import dev.bluehouse.bada.bugreport.BugReportPreferences
 import dev.bluehouse.bada.consent.FullScreenIntentPermission
@@ -30,6 +34,7 @@ import dev.bluehouse.bada.service.downloads.SaveLocationDisplayName
 import dev.bluehouse.bada.service.downloads.SaveLocationPreferences
 import dev.bluehouse.bada.service.receiver.AdvertisedDeviceNames
 import dev.bluehouse.bada.service.receiver.ReceiverForegroundService
+import dev.bluehouse.bada.service.receiver.ReceiverMasterSwitch
 import dev.bluehouse.bada.transfer.KeepScreenOnPreferences
 import dev.bluehouse.bada.transfer.TransferExpertViewPreferences
 import dev.bluehouse.bada.update.UpdatePreferences
@@ -100,8 +105,13 @@ internal class SettingsFragment : Fragment(R.layout.fragment_settings) {
     ) {
         super.onViewCreated(view, savedInstanceState)
 
+        wireMasterSwitch(view)
+
         // "Name Card" row → My Name Card setup page (tap-to-share contacts).
-        view.findViewById<View>(R.id.settings_name_card_row).setOnClickListener {
+        // Hidden until the flow is usable end to end (UserFacingFeatures).
+        val nameCardRow = view.findViewById<View>(R.id.settings_name_card_row)
+        nameCardRow.isVisible = UserFacingFeatures.NAME_CARD_ENABLED
+        nameCardRow.setOnClickListener {
             startActivity(Intent(requireContext(), NameCardSetupActivity::class.java))
         }
 
@@ -118,12 +128,12 @@ internal class SettingsFragment : Fragment(R.layout.fragment_settings) {
             val stored = AdvertisedDeviceNames.setCustomName(requireContext(), input.text?.toString())
             input.setText(stored.orEmpty())
             refreshAdvertisedNameSection()
-            ReceiverForegroundService.start(requireContext())
+            startReceiverIfEnabled()
         }
         view.findViewById<Button>(R.id.main_advertised_name_reset).setOnClickListener {
             AdvertisedDeviceNames.clearCustomName(requireContext())
             refreshAdvertisedNameSection()
-            ReceiverForegroundService.start(requireContext())
+            startReceiverIfEnabled()
         }
 
         view.findViewById<Button>(R.id.settings_battery_open).setOnClickListener {
@@ -184,13 +194,57 @@ internal class SettingsFragment : Fragment(R.layout.fragment_settings) {
     }
 
     /**
+     * Master on/off pill (#239). The row toggles; the switch mirrors the
+     * persisted state. Off stops the receiver service right away, on
+     * starts it again, and the receive tab repaints from the same flag.
+     */
+    private fun wireMasterSwitch(view: View) {
+        val row = view.findViewById<View>(R.id.settings_master_row)
+        val label = view.findViewById<TextView>(R.id.settings_master_label)
+        val switch = view.findViewById<SwitchCompat>(R.id.settings_master_switch)
+        val master = ReceiverMasterSwitch.from(requireContext())
+        val defaultTextColor =
+            requireContext().obtainStyledAttributes(intArrayOf(android.R.attr.textColorPrimary)).use {
+                it.getColor(0, 0)
+            }
+        val accent = ContextCompat.getColor(requireContext(), R.color.brand_primary)
+
+        fun render(on: Boolean) {
+            switch.isChecked = on
+            label.setText(if (on) R.string.settings_master_on else R.string.settings_master_off)
+            label.setTextColor(if (on) accent else defaultTextColor)
+            row.setBackgroundResource(
+                if (on) R.drawable.settings_master_on_background else R.drawable.settings_master_off_background,
+            )
+        }
+        render(master.isEnabled())
+        row.setOnClickListener {
+            val next = !master.isEnabled()
+            master.setEnabled(next)
+            render(next)
+            if (next) {
+                ReceiverForegroundService.start(requireContext())
+            } else {
+                ReceiverForegroundService.stop(requireContext())
+            }
+        }
+    }
+
+    /** Identity refreshes restart the receiver only while the master switch is on. */
+    private fun startReceiverIfEnabled() {
+        if (ReceiverMasterSwitch.isEnabled(requireContext())) ReceiverForegroundService.start(requireContext())
+    }
+
+    /**
      * Show the small red dot on the "Name Card" row when the user hasn't set up a
      * card yet (mirrors the update badge). Re-checked on every onStart so it clears
      * immediately after the user saves a card in NameCardSetupActivity and returns.
      * The dot reflects the in-app card only — a device fallback (SIM / "Me" contact)
      * still counts as "not set up" so the user is nudged to fill it in.
      */
+
     private fun refreshNameCardDot() {
+        if (!UserFacingFeatures.NAME_CARD_ENABLED) return
         val dot = view?.findViewById<View>(R.id.settings_name_card_dot) ?: return
         val configured = NameCardProfileStore.from(requireContext()).isConfigured()
         dot.visibility = if (configured) View.GONE else View.VISIBLE

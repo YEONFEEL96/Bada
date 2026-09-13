@@ -235,7 +235,13 @@ public class ReceiverForegroundService : Service() {
         flags: Int,
         startId: Int,
     ): Int {
-        if (intent?.action == ACTION_STOP) {
+        // Master switch (#239): every start path checks it first, but a
+        // START_STICKY restart or a stale PendingIntent can still land here.
+        // Stopping before startForeground is allowed inside the grace period
+        // and leaves no notification behind.
+        val masterOff = !ReceiverMasterSwitch.isEnabled(this)
+        if (intent?.action == ACTION_STOP || masterOff) {
+            if (masterOff) DiagnosticLog.w(NFC_WAKE_TAG, "receiver master switch is off; refusing to start")
             stopReceiverAndExit()
             return START_NOT_STICKY
         }

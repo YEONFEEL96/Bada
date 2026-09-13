@@ -18,6 +18,7 @@ import dev.bluehouse.bada.consent.ConsentTrampolineActivity
 import dev.bluehouse.bada.onboarding.PermissionRequirements
 import dev.bluehouse.bada.service.receiver.MdnsVisibilityOverrideHolder
 import dev.bluehouse.bada.service.receiver.ReceiverForegroundService
+import dev.bluehouse.bada.service.receiver.ReceiverMasterSwitch
 import dev.bluehouse.bada.service.receiver.TileVisibilityElevationHolder
 import dev.bluehouse.bada.service.receiver.consent.ConsentIntents
 
@@ -87,9 +88,13 @@ internal class BadaQuickShareTileService : TileService() {
         // actually advertise — so bounce the user into the app instead,
         // which routes to the permissions onboarding. This mirrors
         // MainActivity's own service-start gate.
-        if (!PermissionRequirements.allGranted(this) &&
-            !PermissionRequirements.onlyOptionalMissing(this)
-        ) {
+        // Master switch (#239) joins the same gate: the user turned Bada
+        // off, so hand them the app instead of silently starting a receiver
+        // they disabled.
+        val permissionsMissing =
+            !PermissionRequirements.allGranted(this) &&
+                !PermissionRequirements.onlyOptionalMissing(this)
+        if (permissionsMissing || !ReceiverMasterSwitch.isEnabled(this)) {
             openApp()
             return
         }

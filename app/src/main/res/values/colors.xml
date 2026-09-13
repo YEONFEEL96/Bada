@@ -159,4 +159,7 @@
     -->
     <color name="radio_banner_fill">#0A0F62FE</color>
     <color name="radio_banner_stroke">#1F0F62FE</color>
+    <!-- Settings master switch ON plate (#239): brand tint strong enough to read as "active". -->
+    <color name="master_on_fill">#1A0F62FE</color>
+    <color name="master_on_stroke">#330F62FE</color>
 </resources>
