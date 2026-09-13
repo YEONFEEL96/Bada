@@ -126,10 +126,11 @@ class WifiDirectMediumProviderTest {
     }
 
     @Test
-    fun `consumePendingServerSocket returns null when prepareUpgrade was never called`() {
-        val provider = newProvider(supported = true)
-        assertThat(provider.consumePendingServerSocket()).isNull()
-    }
+    fun `consumePendingServerSocket returns null when prepareUpgrade was never called`() =
+        runTest {
+            val provider = newProvider(supported = true)
+            assertThat(provider.consumePendingServerSocket()).isNull()
+        }
 
     @Test
     fun `consumePendingClientTransport returns null when adoptUpgrade was never successful`() {

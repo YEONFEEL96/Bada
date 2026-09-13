@@ -5,6 +5,7 @@
  */
 package dev.bluehouse.bada.protocol.connection
 
+import com.google.location.nearby.connections.proto.OfflineWireFormatsProto.BandwidthUpgradeNegotiationFrame
 import com.google.location.nearby.connections.proto.OfflineWireFormatsProto.OfflineFrame
 import com.google.location.nearby.connections.proto.OfflineWireFormatsProto.PayloadTransferFrame.PayloadHeader
 import com.google.location.nearby.connections.proto.OfflineWireFormatsProto.V1Frame
@@ -15,6 +16,7 @@ import dev.bluehouse.bada.protocol.crypto.securemessage.SecureChannel
 import dev.bluehouse.bada.protocol.endpoint.EndpointInfo
 import dev.bluehouse.bada.protocol.medium.Medium
 import dev.bluehouse.bada.protocol.medium.MediumRegistry
+import dev.bluehouse.bada.protocol.medium.UpgradedTransport
 import dev.bluehouse.bada.protocol.payload.FileDestinationFactory
 import dev.bluehouse.bada.protocol.payload.PayloadAssembler
 import dev.bluehouse.bada.protocol.payload.PayloadEvent
@@ -31,6 +33,7 @@ import dev.bluehouse.bada.protocol.transport.EndOfFrameStream
 import dev.bluehouse.bada.protocol.transport.FramedConnection
 import dev.bluehouse.bada.protocol.ukey2.Ukey2Server
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
@@ -62,6 +65,7 @@ import java.security.SecureRandom
 @Suppress(
     "TooManyFunctions", // The lifecycle inherently has many phases; each is one function for readability.
     "LongParameterList", // Constructor takes the connection's collaborators verbatim.
+    "LargeClass", // Same shape as OutboundConnectionDriver: one driver per role, documented phase by phase.
 )
 internal class InboundConnectionDriver(
     private val transport: ConnectedTransport,
@@ -98,6 +102,12 @@ internal class InboundConnectionDriver(
      * disabled — see issue #200 / [OutboundConnectionDriver].
      */
     private val safeToDisconnectVersion: Int = OfflineFrames.SAFE_TO_DISCONNECT_VERSION,
+    /**
+     * How long an `UPGRADE_PATH_AVAILABLE` offer waits for the peer to
+     * connect to the offered medium before the receiver gives up on it
+     * and continues on the bootstrap channel. Tests inject shorter values.
+     */
+    private val upgradeAcceptTimeoutMillis: Long = BandwidthUpgradeOrchestrator.UPGRADE_TIMEOUT_MILLIS,
 ) {
     private var framedConnection: FramedConnection? = null
     private var secureChannel: SecureChannel? = null
@@ -263,30 +273,79 @@ internal class InboundConnectionDriver(
         // payload on the original channel, keep it buffered while the
         // upgrade orchestrator drains the old and upgraded channels in
         // global SecureMessage sequence order.
+        val upgradeCandidates = requestedUpgradeMediums ?: peerSupportedMediums
+        val peerEndpointId = initialFrame.v1.connectionRequest.endpointId
+        val preUpgradeFrames = listOfNotNull(initialWireFrame.takeIf { requestedUpgradeMediums == null })
+        if (!transport.medium.carriesNegotiationDuringUpgrade()) {
+            return runBlockingUpgradeThenNegotiate(channel, upgradeCandidates, peerEndpointId, preUpgradeFrames)
+        }
+
+        // Wi-Fi LAN bootstrap (#288): put the offer on the wire but do NOT
+        // park on the provider's accept. A stock GMS sender that ignores
+        // (or fails) the offer keeps negotiating on the LAN channel, and a
+        // receiver that stops reading that channel while it waits for a
+        // Wi-Fi Direct peer that never comes looks dead to the sender —
+        // consent never surfaces and the sender times out. Start the
+        // sharing FSM on the prior channel right away and let
+        // runPendingUpgradeLoop adopt the upgraded transport whenever (if
+        // ever) the peer actually connects to it.
+        val offer =
+            BandwidthUpgradeOrchestrator.offerServerUpgrade(
+                oldChannel = channel,
+                currentMedium = transport.medium,
+                mediumRegistry = mediumRegistry,
+                peerSupportedMediums = upgradeCandidates,
+                logger = logger,
+            )
+        val negotiationFsm = startNegotiation(channel)
+        val outcome =
+            if (offer == null) {
+                PendingUpgradeOutcome.Continue(channel, preUpgradeFrames)
+            } else {
+                runPendingUpgradeLoop(
+                    channel = channel,
+                    fsm = negotiationFsm,
+                    offer = offer,
+                    peerEndpointId = peerEndpointId,
+                    initialWireFrames = preUpgradeFrames,
+                )
+            }
+        return when (outcome) {
+            is PendingUpgradeOutcome.Terminal -> outcome.result
+            is PendingUpgradeOutcome.Continue ->
+                runReceiveLoop(outcome.channel, negotiationFsm, outcome.bufferedFrames)
+        }
+    }
+
+    /**
+     * Legacy ordering for BLE-based bootstraps: complete (or give up on)
+     * the bandwidth upgrade first, then start the sharing negotiation on
+     * whichever channel won. BLE GATT / L2CAP control channels keep their
+     * quiet negotiation phase — #216 timing is sensitive there and the
+     * peer expects the payload-capable medium before any sharing frame.
+     */
+    private suspend fun runBlockingUpgradeThenNegotiate(
+        channel: SecureChannel,
+        upgradeCandidates: Set<Medium>,
+        peerEndpointId: String,
+        preUpgradeFrames: List<OfflineFrame>,
+    ): InboundResult {
         val activeTransport =
             BandwidthUpgradeOrchestrator
                 .runServerUpgradeIfAvailable(
                     oldChannel = channel,
                     currentMedium = transport.medium,
                     mediumRegistry = mediumRegistry,
-                    peerSupportedMediums = requestedUpgradeMediums ?: peerSupportedMediums,
-                    peerEndpointId = initialFrame.v1.connectionRequest.endpointId,
+                    peerSupportedMediums = upgradeCandidates,
+                    peerEndpointId = peerEndpointId,
                     logger = logger,
+                    acceptTimeoutMillis = upgradeAcceptTimeoutMillis,
                 )
         if (!activeTransport.fallbackChannelUsable) return failDirtyUpgradeFallback(activeTransport)
         val activeChannel = activeTransport.channel.also { secureChannel = it }
         publishActiveTransport(activeTransport.medium, activeTransport.wifiFrequencyMhz)
-        val initialWireFrames =
-            buildList {
-                if (requestedUpgradeMediums == null) {
-                    initialWireFrame?.let(::add)
-                }
-                addAll(activeTransport.bufferedFrames)
-            }
+        val initialWireFrames = preUpgradeFrames + activeTransport.bufferedFrames
 
-        // Step 8-10: drive the negotiation FSM through to consent.
-        mutableState.value = InboundConnectionState.Negotiating
-        val negotiationFsm = InboundSharingFsm(secureRandom = secureRandom).also { fsm = it }
         if (activeTransport.medium != transport.medium) {
             logger(
                 "medium-upgrade: delaying sharing negotiation " +
@@ -294,16 +353,254 @@ internal class InboundConnectionDriver(
             )
             delay(POST_UPGRADE_SHARING_DELAY_MILLIS)
         }
-        applyEffects(activeChannel, negotiationFsm.start())
-
-        // Mark the handshake as complete so a racing UI-side cancel()
-        // takes the cooperative FSM path (CANCEL + DISCONNECTION on the
-        // wire) instead of the pre-handshake fast-path (raw socket
-        // close). The dispatch loop drains externalEvents from this
-        // point on.
-        onHandshakeComplete()
-
+        val negotiationFsm = startNegotiation(activeChannel)
         return runReceiveLoop(activeChannel, negotiationFsm, initialWireFrames)
+    }
+
+    /**
+     * Steps 8-10 entry: publish `Negotiating`, send the FSM's opening
+     * PAIRED_KEY_ENCRYPTION on [channel], and mark the handshake complete
+     * so a racing UI-side cancel() takes the cooperative FSM path (CANCEL
+     * + DISCONNECTION on the wire) instead of the pre-handshake fast-path
+     * (raw socket close). External events are drained from this point on.
+     */
+    private suspend fun startNegotiation(channel: SecureChannel): InboundSharingFsm {
+        mutableState.value = InboundConnectionState.Negotiating
+        val negotiationFsm = InboundSharingFsm(secureRandom = secureRandom).also { fsm = it }
+        applyEffects(channel, negotiationFsm.start())
+        onHandshakeComplete()
+        return negotiationFsm
+    }
+
+    /**
+     * Service the prior channel (and user events) while [offer] waits for
+     * the peer to connect to the upgraded medium. Mirrors
+     * `OutboundConnectionDriver.runWifiDirectUpgradeReceiveLoop`: a
+     * polling reader rather than the blocking pump, because completing the
+     * upgrade needs exclusive, sequence-ordered access to both channels.
+     *
+     * Exits with [PendingUpgradeOutcome.Continue] once the offer is
+     * settled either way (upgraded, timed out, declined by the peer, or
+     * failed) so the regular blocking receive loop takes over on the
+     * winning channel, or with [PendingUpgradeOutcome.Terminal] when the
+     * session ended before that.
+     */
+    @Suppress("LongMethod", "ReturnCount")
+    private suspend fun runPendingUpgradeLoop(
+        channel: SecureChannel,
+        fsm: InboundSharingFsm,
+        offer: ServerUpgradeOffer,
+        peerEndpointId: String,
+        initialWireFrames: List<OfflineFrame>,
+    ): PendingUpgradeOutcome =
+        coroutineScope {
+            val bufferedFrames = ArrayDeque(initialWireFrames)
+            val accept = offer.launchAccept(this, logger)
+            val deadlineMillis = nowMillisSource() + upgradeAcceptTimeoutMillis
+            var nextKeepAliveDueMillis = nowMillisSource() + KeepAliveTicker.DEFAULT_INTERVAL_MILLIS
+            val keepAliveTick: suspend () -> DriverEvent? = tick@{
+                if (nowMillisSource() < nextKeepAliveDueMillis) return@tick null
+                nextKeepAliveDueMillis = nowMillisSource() + KeepAliveTicker.DEFAULT_INTERVAL_MILLIS
+                sendNegotiationKeepAlive(channel)
+            }
+            var settled = false
+            try {
+                while (true) {
+                    if (fsm.state == InboundSharingState.Disconnected) {
+                        return@coroutineScope PendingUpgradeOutcome.Terminal(terminalResultFromState())
+                    }
+                    if (accept.isCompleted) {
+                        settled = true
+                        return@coroutineScope adoptAcceptedTransport(
+                            channel = channel,
+                            offer = offer,
+                            transport = accept.await(),
+                            peerEndpointId = peerEndpointId,
+                            bufferedFrames = bufferedFrames,
+                        )
+                    }
+                    if (nowMillisSource() >= deadlineMillis) {
+                        settled = true
+                        return@coroutineScope abandonPendingUpgrade(
+                            channel = channel,
+                            offer = offer,
+                            accept = accept,
+                            reason = "server accept timed out/failed for ${offer.medium}",
+                            notifyPeer = true,
+                            bufferedFrames = bufferedFrames,
+                        )
+                    }
+
+                    val event = nextPendingUpgradeEvent(channel, bufferedFrames) ?: keepAliveTick()
+                    if (event == null) {
+                        delay(PENDING_UPGRADE_POLL_DELAY_MILLIS)
+                        continue
+                    }
+                    if (event is DriverEvent.Wire && event.frame.isUpgradeFailure()) {
+                        settled = true
+                        return@coroutineScope abandonPendingUpgrade(
+                            channel = channel,
+                            offer = offer,
+                            accept = accept,
+                            reason = "peer reported UPGRADE_FAILURE for ${offer.medium}",
+                            notifyPeer = false,
+                            bufferedFrames = bufferedFrames,
+                        )
+                    }
+                    val terminal = handleDriverEvent(channel, fsm, event)
+                    if (terminal != null) return@coroutineScope PendingUpgradeOutcome.Terminal(terminal)
+                }
+                error("unreachable")
+            } finally {
+                if (!settled) {
+                    // Session ended (peer disconnect, local cancel, failure)
+                    // with the offer still open: close the listener first so
+                    // a provider parked in accept() unblocks, then join.
+                    offer.provider.cancelPendingUpgrade()
+                    accept.cancelAndJoin()
+                }
+            }
+        }
+
+    /** Settle an open offer without upgrading and keep the prior channel. */
+    @Suppress("LongParameterList")
+    private suspend fun abandonPendingUpgrade(
+        channel: SecureChannel,
+        offer: ServerUpgradeOffer,
+        accept: Deferred<UpgradedTransport?>,
+        reason: String,
+        notifyPeer: Boolean,
+        bufferedFrames: ArrayDeque<OfflineFrame>,
+    ): PendingUpgradeOutcome.Continue {
+        offer.abandon(
+            oldChannel = channel,
+            reason = "$reason; continuing on ${transport.medium}",
+            notifyPeer = notifyPeer,
+            logger = logger,
+            pendingAccept = accept,
+        )
+        return PendingUpgradeOutcome.Continue(channel, bufferedFrames.toList())
+    }
+
+    /**
+     * The peer connected to the offered medium (or the provider gave up):
+     * finish the swap and hand back the channel the receive loop should
+     * continue on.
+     */
+    private suspend fun adoptAcceptedTransport(
+        channel: SecureChannel,
+        offer: ServerUpgradeOffer,
+        transport: UpgradedTransport?,
+        peerEndpointId: String,
+        bufferedFrames: ArrayDeque<OfflineFrame>,
+    ): PendingUpgradeOutcome {
+        if (transport == null) {
+            offer.abandon(
+                oldChannel = channel,
+                reason = "server accept failed for ${offer.medium}; continuing on ${this.transport.medium}",
+                notifyPeer = true,
+                logger = logger,
+            )
+            return PendingUpgradeOutcome.Continue(channel, bufferedFrames.toList())
+        }
+        val activeTransport =
+            BandwidthUpgradeOrchestrator.completeOfferedUpgrade(
+                oldChannel = channel,
+                currentMedium = this.transport.medium,
+                offer = offer,
+                transport = transport,
+                peerEndpointId = peerEndpointId,
+                logger = logger,
+            )
+        return if (!activeTransport.fallbackChannelUsable) {
+            PendingUpgradeOutcome.Terminal(failDirtyUpgradeFallback(activeTransport))
+        } else {
+            bufferedFrames.addAll(activeTransport.bufferedFrames)
+            if (activeTransport.channel !== channel) settleOnUpgradedChannel(activeTransport)
+            PendingUpgradeOutcome.Continue(activeTransport.channel, bufferedFrames.toList())
+        }
+    }
+
+    /**
+     * Switch bookkeeping to the upgraded channel and hold the same settle
+     * window the blocking path keeps before the first write on it.
+     */
+    private suspend fun settleOnUpgradedChannel(activeTransport: ActiveTransportChannel) {
+        secureChannel = activeTransport.channel
+        publishActiveTransport(activeTransport.medium, activeTransport.wifiFrequencyMhz)
+        logger(
+            "medium-upgrade: delaying sharing traffic " +
+                "${POST_UPGRADE_SHARING_DELAY_MILLIS}ms after ${activeTransport.medium}",
+        )
+        delay(POST_UPGRADE_SHARING_DELAY_MILLIS)
+    }
+
+    /**
+     * Non-blocking event source for [runPendingUpgradeLoop]: buffered
+     * frames first, then a pending user event, then one wire frame if the
+     * socket already has bytes for us. `null` means "nothing right now".
+     */
+    @Suppress("ReturnCount", "TooGenericExceptionCaught", "SwallowedException")
+    private suspend fun nextPendingUpgradeEvent(
+        channel: SecureChannel,
+        bufferedFrames: ArrayDeque<OfflineFrame>,
+    ): DriverEvent? {
+        if (bufferedFrames.isNotEmpty()) return DriverEvent.Wire(bufferedFrames.removeFirst())
+        externalEvents.tryReceive().getOrNull()?.let { return DriverEvent.External(it) }
+        if (!channel.hasBufferedInput()) return null
+        return try {
+            DriverEvent.Wire(channel.receiveOfflineFrame())
+        } catch (e: EndOfFrameStream) {
+            DriverEvent.PeerClosed
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            DriverEvent.PumpError(e)
+        }
+    }
+
+    /**
+     * Inline KEEP_ALIVE for the pending-upgrade phase (the ticker
+     * coroutine only runs inside [runReceiveLoop]). A failed write doubles
+     * as the peer-gone detector: the polling reader cannot see EOF because
+     * `available()` reports 0 for a closed socket too.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun sendNegotiationKeepAlive(channel: SecureChannel): DriverEvent? =
+        try {
+            channel.sendOfflineFrame(OfflineFrames.keepAlive(ack = false))
+            null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger(
+                "keep-alive: pending-upgrade tick failed " +
+                    "(${e::class.simpleName}: ${e.message}); treating peer as gone",
+            )
+            DriverEvent.PeerClosed
+        }
+
+    private fun OfflineFrame.isUpgradeFailure(): Boolean =
+        hasV1() &&
+            v1.type == V1Frame.FrameType.BANDWIDTH_UPGRADE_NEGOTIATION &&
+            v1.bandwidthUpgradeNegotiation.eventType == BandwidthUpgradeNegotiationFrame.EventType.UPGRADE_FAILURE
+
+    /**
+     * Whether the bootstrap medium can keep carrying Nearby Share
+     * negotiation frames while a bandwidth upgrade is pending. BLE-based
+     * control channels cannot (see [runBlockingUpgradeThenNegotiate]).
+     */
+    private fun Medium.carriesNegotiationDuringUpgrade(): Boolean = this != Medium.BLE && this != Medium.BLE_L2CAP
+
+    private sealed interface PendingUpgradeOutcome {
+        data class Terminal(
+            val result: InboundResult,
+        ) : PendingUpgradeOutcome
+
+        data class Continue(
+            val channel: SecureChannel,
+            val bufferedFrames: List<OfflineFrame>,
+        ) : PendingUpgradeOutcome
     }
 
     /**
@@ -936,5 +1233,6 @@ internal class InboundConnectionDriver(
         private const val INITIAL_FRAME_PROBE_DELAY_MILLIS = 10L
         private const val MAX_LOGGED_INTRODUCTION_ITEMS = 5
         private const val POST_UPGRADE_SHARING_DELAY_MILLIS = 750L
+        private const val PENDING_UPGRADE_POLL_DELAY_MILLIS = 10L
     }
 }

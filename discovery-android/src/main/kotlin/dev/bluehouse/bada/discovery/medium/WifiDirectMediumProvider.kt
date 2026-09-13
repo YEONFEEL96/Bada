@@ -14,8 +14,7 @@ import dev.bluehouse.bada.protocol.medium.Medium
 import dev.bluehouse.bada.protocol.medium.MediumProvider
 import dev.bluehouse.bada.protocol.medium.UpgradePathCredentials
 import dev.bluehouse.bada.protocol.medium.UpgradedTransport
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
 import java.io.Closeable
 import java.io.IOException
 import java.net.ServerSocket
@@ -201,10 +200,7 @@ public class WifiDirectMediumProvider internal constructor(
         }
     }
 
-    override suspend fun acceptUpgrade(): UpgradedTransport? =
-        withContext(Dispatchers.IO) {
-            consumePendingServerTransport()
-        }
+    override suspend fun acceptUpgrade(): UpgradedTransport? = consumePendingServerTransport()
 
     override fun cancelPendingUpgrade() {
         cancelPending()
@@ -215,25 +211,40 @@ public class WifiDirectMediumProvider internal constructor(
      * server-side `ServerSocket` allocated in [prepareUpgrade] and
      * clears the slot. Returns `null` when no upgrade is pending.
      */
-    public fun consumePendingServerSocket(): Socket? = consumePendingServerTransport()?.socket
+    public suspend fun consumePendingServerSocket(): Socket? = consumePendingServerTransport()?.socket
 
     /**
      * **Internal — for the orchestrator wired in #54.** Hands back the
      * connected server-side transport allocated in [prepareUpgrade].
+     *
+     * Suspends until the peer connects, the pending upgrade is cancelled
+     * through [cancelPending] (which closes the listener), or the calling
+     * coroutine is cancelled — the accept is [acceptCancellable], so a
+     * `withTimeoutOrNull` around this call really does return on time
+     * instead of parking an IO thread for as long as the peer stays away
+     * (#288).
      */
-    public fun consumePendingServerTransport(): WifiDirectTransport? {
+    public suspend fun consumePendingServerTransport(): WifiDirectTransport? {
         val pending = pendingServer.get() ?: return null
         return acceptPendingServerTransport(pending)
     }
 
-    private fun acceptPendingServerTransport(pending: PendingServer): WifiDirectTransport? =
+    private suspend fun acceptPendingServerTransport(pending: PendingServer): WifiDirectTransport? =
         try {
-            // Block-accept on the receiver-side socket. The peer is about
-            // to call connect on this exact port. Close the listening socket
-            // once accept returns to free the port.
-            val socket = pending.serverSocket.use { listener -> listener.accept() }
+            // Accept on the receiver-side socket. The peer is about to call
+            // connect on this exact port. Close the listening socket once
+            // accept returns to free the port.
+            val socket = pending.serverSocket.use { listener -> listener.acceptCancellable() }
             Log.w(TAG, "Wi-Fi Direct ServerSocket accepted peer=${socket.remoteSocketAddress}")
             claimAcceptedServerTransport(pending, socket)
+        } catch (cancel: CancellationException) {
+            // Cancelled while waiting: the listener is already closed by
+            // acceptCancellable; release the P2P group so the next offer
+            // can form a fresh one.
+            if (pendingServer.compareAndSet(pending, null)) {
+                pending.handle.teardown.runCatching { close() }
+            }
+            throw cancel
         } catch (e: IOException) {
             Log.w(TAG, "Wi-Fi Direct ServerSocket.accept threw", e)
             if (pendingServer.compareAndSet(pending, null)) {

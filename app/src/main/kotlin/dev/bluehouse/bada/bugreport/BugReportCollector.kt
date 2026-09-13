@@ -78,6 +78,7 @@ internal class BugReportCollector(
             }
 
             val outboundLogBytes = readOptionalExternalFile("bada-outbound.log", failures, "outbound_log")
+            val inboundLogBytes = readOptionalExternalFile("bada-inbound.log", failures, "inbound_log")
             val diagnosticsLogBytes = collectDiagnosticsLog(includeWifiBssid, failures)
             val ringbufferText =
                 DiagnosticLog.dumpRecent(
@@ -121,10 +122,8 @@ internal class BugReportCollector(
                         "discovery.txt",
                         buildDiscoverySnapshot(discoverySnapshot).encodeToByteArray(),
                     ),
-                    BugReportArchiveEntry(
-                        "logs/outbound.log",
-                        outboundLogBytes ?: "not_available\n".encodeToByteArray(),
-                    ),
+                    onDeviceLogEntry("logs/outbound.log", outboundLogBytes),
+                    onDeviceLogEntry("logs/inbound.log", inboundLogBytes),
                     BugReportArchiveEntry(
                         "logs/diagnostics.log",
                         diagnosticsLogBytes
@@ -159,6 +158,12 @@ internal class BugReportCollector(
         } ?: error("Could not open output stream for $destination")
     }
 
+    /** Archive entry for an optional on-device log file; a missing file is recorded, not skipped. */
+    private fun onDeviceLogEntry(
+        path: String,
+        bytes: ByteArray?,
+    ): BugReportArchiveEntry = BugReportArchiveEntry(path, bytes ?: "not_available\n".encodeToByteArray())
+
     private fun buildReadme(): String =
         """
         Bada bug report archive
@@ -169,6 +174,7 @@ internal class BugReportCollector(
         - permissions.txt: granted/denied runtime permissions
         - discovery.txt: receiver/discovery runtime state
         - logs/outbound.log: on-disk outbound diagnostic log when available
+        - logs/inbound.log: on-disk receiver (inbound connection) diagnostic log when available
         - logs/diagnostics.log: persisted BLE/discovery diagnostics (rotated), incl. L2CAP/GATT bootstrap detail; only when more-identifying details consent is given
         - logs/ringbuffer.txt: recent in-memory diagnostics from the last 15 minutes
         - screenshot.png: screenshot of the current Bada activity, or a placeholder when redacted

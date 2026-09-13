@@ -5,12 +5,12 @@
  */
 package dev.bluehouse.bada.discovery.wifi.hotspot
 
+import dev.bluehouse.bada.discovery.medium.acceptCancellable
 import dev.bluehouse.bada.protocol.medium.Medium
 import dev.bluehouse.bada.protocol.medium.MediumProvider
 import dev.bluehouse.bada.protocol.medium.UpgradePathCredentials
 import dev.bluehouse.bada.protocol.medium.UpgradedTransport
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -118,22 +118,31 @@ public class WifiHotspotMediumProvider(
         return reservation.credentials
     }
 
+    /**
+     * Waits for the joined peer to connect to the reservation's listener.
+     * The accept is [acceptCancellable] so an orchestrator timeout (or a
+     * cancelled session) really unblocks it instead of parking an IO
+     * thread until a peer that already gave up shows up (#288); either way
+     * the reservation is torn down before returning / rethrowing.
+     */
     @Suppress("SwallowedException")
-    override suspend fun acceptUpgrade(): UpgradedTransport? =
-        withContext(Dispatchers.IO) {
-            val reservation = pendingReservation.getAndSet(null) ?: return@withContext null
-            try {
-                WifiHotspotTransport(
-                    socket = reservation.serverSocket.accept(),
-                    teardown = reservation.teardown,
-                )
-            } catch (
-                @Suppress("TooGenericExceptionCaught") t: Throwable,
-            ) {
-                reservation.teardown()
-                null
-            }
+    override suspend fun acceptUpgrade(): UpgradedTransport? {
+        val reservation = pendingReservation.getAndSet(null) ?: return null
+        return try {
+            WifiHotspotTransport(
+                socket = reservation.serverSocket.acceptCancellable(),
+                teardown = reservation.teardown,
+            )
+        } catch (cancel: CancellationException) {
+            reservation.teardown()
+            throw cancel
+        } catch (
+            @Suppress("TooGenericExceptionCaught") t: Throwable,
+        ) {
+            reservation.teardown()
+            null
         }
+    }
 
     override fun cancelPendingUpgrade() {
         pendingReservation.getAndSet(null)?.teardown?.invoke()

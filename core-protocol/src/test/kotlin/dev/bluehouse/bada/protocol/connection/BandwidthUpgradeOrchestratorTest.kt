@@ -22,6 +22,7 @@ import dev.bluehouse.bada.protocol.medium.UpgradePathCredentials
 import dev.bluehouse.bada.protocol.medium.UpgradedTransport
 import dev.bluehouse.bada.protocol.transport.FramedConnection
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -32,6 +33,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.security.SecureRandom
 import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
 
 class BandwidthUpgradeOrchestratorTest {
     private val openedSockets = mutableListOf<Socket>()
@@ -438,6 +440,92 @@ class BandwidthUpgradeOrchestratorTest {
             }
         }
 
+    @Test
+    fun `server gives up on an offer the peer never connects to within the accept timeout`() =
+        runBlocking {
+            withTimeout(WALLCLOCK_TIMEOUT_MILLIS) {
+                val (oldClientSocket, oldServerSocket) = connectedSocketPair()
+                val oldClientChannel =
+                    SecureChannel(
+                        FramedConnection(oldClientSocket),
+                        freshSessionKeys(D2DRole.CLIENT),
+                        SecureRandom(),
+                    )
+                val oldServerChannel =
+                    SecureChannel(
+                        FramedConnection(oldServerSocket),
+                        freshSessionKeys(D2DRole.SERVER),
+                        SecureRandom(),
+                    )
+                val provider = HangingServerProvider()
+                val registry =
+                    MediumRegistry(
+                        providers = listOf(provider),
+                        ladder = MediumLadder(listOf(Medium.WIFI_DIRECT)),
+                    )
+                val logs = Collections.synchronizedList(mutableListOf<String>())
+
+                coroutineScope {
+                    val server =
+                        async {
+                            BandwidthUpgradeOrchestrator.runServerUpgradeIfAvailable(
+                                oldChannel = oldServerChannel,
+                                currentMedium = Medium.BLE,
+                                mediumRegistry = registry,
+                                peerSupportedMediums = setOf(Medium.WIFI_DIRECT),
+                                peerEndpointId = ENDPOINT_ID,
+                                logger = logs::add,
+                                acceptTimeoutMillis = SHORT_ACCEPT_TIMEOUT_MILLIS,
+                            )
+                        }
+                    val client =
+                        async {
+                            oldClientChannel
+                                .receiveOfflineFrame()
+                                .assertUpgradeEvent(BandwidthUpgradeNegotiationFrame.EventType.UPGRADE_PATH_AVAILABLE)
+                            // The peer never connects to the offered medium; the
+                            // server must still report the failure on the prior
+                            // channel once its accept window closes (#288).
+                            oldClientChannel
+                                .receiveOfflineFrame()
+                                .assertUpgradeEvent(BandwidthUpgradeNegotiationFrame.EventType.UPGRADE_FAILURE)
+                        }
+
+                    val activeTransport = server.await()
+                    client.await()
+
+                    assertThat(activeTransport.channel).isSameInstanceAs(oldServerChannel)
+                    assertThat(activeTransport.medium).isEqualTo(Medium.BLE)
+                    assertThat(activeTransport.fallbackChannelUsable).isTrue()
+                }
+
+                assertThat(provider.cancelCalls.get()).isEqualTo(1)
+                assertThat(logs.joinToString("\n")).contains("server accept timed out/failed for WIFI_DIRECT")
+            }
+        }
+
+    /**
+     * Server-side provider whose accept never completes on its own —
+     * models a real listener parked in `accept()` while the peer ignores
+     * the offer. Only cancellation (after the listener is "closed" through
+     * [cancelPendingUpgrade]) can end it.
+     */
+    private class HangingServerProvider : MediumProvider {
+        override val medium: Medium = Medium.WIFI_DIRECT
+        val cancelCalls = AtomicInteger()
+
+        override fun isSupported(): Boolean = true
+
+        override suspend fun prepareUpgrade(): UpgradePathCredentials =
+            UpgradePathCredentials.Generic(Medium.WIFI_DIRECT)
+
+        override suspend fun acceptUpgrade(): UpgradedTransport? = awaitCancellation()
+
+        override fun cancelPendingUpgrade() {
+            cancelCalls.incrementAndGet()
+        }
+    }
+
     private fun clientProvider(socket: Socket): MediumProvider =
         object : MediumProvider {
             override val medium: Medium = Medium.WIFI_DIRECT
@@ -508,5 +596,6 @@ class BandwidthUpgradeOrchestratorTest {
     private companion object {
         const val ENDPOINT_ID = "ABCD"
         const val WALLCLOCK_TIMEOUT_MILLIS = 7_000L
+        const val SHORT_ACCEPT_TIMEOUT_MILLIS = 300L
     }
 }

@@ -11,12 +11,19 @@ import com.google.location.nearby.connections.proto.OfflineWireFormatsProto.V1Fr
 import dev.bluehouse.bada.protocol.crypto.securemessage.SecureChannel
 import dev.bluehouse.bada.protocol.crypto.securemessage.SequencedOfflineFrame
 import dev.bluehouse.bada.protocol.medium.Medium
+import dev.bluehouse.bada.protocol.medium.MediumProvider
 import dev.bluehouse.bada.protocol.medium.MediumRegistry
 import dev.bluehouse.bada.protocol.medium.PreparedUpgradeSelection
 import dev.bluehouse.bada.protocol.medium.UpgradePathCredentials
 import dev.bluehouse.bada.protocol.medium.UpgradedTransport
 import dev.bluehouse.bada.protocol.medium.asFramedConnection
 import dev.bluehouse.bada.protocol.transport.FramedConnection
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.TreeMap
@@ -33,7 +40,17 @@ import java.util.TreeMap
  * with [oldChannel].
  */
 internal object BandwidthUpgradeOrchestrator {
-    @Suppress("ReturnCount")
+    /**
+     * Blocking server-side upgrade: offer, wait for the peer to connect to
+     * the prepared medium, then swap. Used on bootstraps that cannot carry
+     * the sharing negotiation while the upgrade is pending (BLE GATT /
+     * L2CAP). Wi-Fi LAN sessions use the split [offerServerUpgrade] /
+     * [ServerUpgradeOffer.launchAccept] / [completeOfferedUpgrade] /
+     * [ServerUpgradeOffer.abandon] steps from [InboundConnectionDriver] so
+     * the prior channel keeps being serviced while the peer decides whether
+     * to take the offer (#288).
+     */
+    @Suppress("LongParameterList") // Mirrors the client-side twin; the timeout is test-injected.
     suspend fun runServerUpgradeIfAvailable(
         oldChannel: SecureChannel,
         currentMedium: Medium,
@@ -41,7 +58,66 @@ internal object BandwidthUpgradeOrchestrator {
         peerSupportedMediums: Set<Medium>,
         peerEndpointId: String,
         logger: (String) -> Unit,
+        acceptTimeoutMillis: Long = UPGRADE_TIMEOUT_MILLIS,
     ): ActiveTransportChannel {
+        val offer =
+            offerServerUpgrade(
+                oldChannel = oldChannel,
+                currentMedium = currentMedium,
+                mediumRegistry = mediumRegistry,
+                peerSupportedMediums = peerSupportedMediums,
+                logger = logger,
+            ) ?: return ActiveTransportChannel(oldChannel, currentMedium)
+
+        // The deadline is enforced here rather than trusted to the provider:
+        // a provider parked in a blocking accept() syscall does not observe
+        // coroutine cancellation, so on timeout the listener is closed via
+        // cancelPendingUpgrade() BEFORE the accept coroutine is joined.
+        // Without that ordering the 30 s timeout silently never fired on
+        // real devices and the inbound connection hung forever (#288).
+        val transport =
+            coroutineScope {
+                val accept = offer.launchAccept(this, logger)
+                withTimeoutOrNull(acceptTimeoutMillis) { accept.await() }.also { accepted ->
+                    if (accepted == null) {
+                        offer.abandon(
+                            oldChannel = oldChannel,
+                            reason = "server accept timed out/failed for ${offer.medium}",
+                            notifyPeer = true,
+                            logger = logger,
+                            pendingAccept = accept,
+                        )
+                    }
+                }
+            }
+        return if (transport == null) {
+            ActiveTransportChannel(oldChannel, currentMedium)
+        } else {
+            completeOfferedUpgrade(
+                oldChannel = oldChannel,
+                currentMedium = currentMedium,
+                offer = offer,
+                transport = transport,
+                peerEndpointId = peerEndpointId,
+                logger = logger,
+            )
+        }
+    }
+
+    /**
+     * Prepare the best upgrade medium shared with the peer and put the
+     * `UPGRADE_PATH_AVAILABLE` offer on [oldChannel]. Returns `null` (and
+     * sends nothing) when there is nothing to upgrade to; the caller then
+     * simply stays on [currentMedium].
+     */
+    @Suppress("ReturnCount")
+    suspend fun offerServerUpgrade(
+        oldChannel: SecureChannel,
+        currentMedium: Medium,
+        mediumRegistry: MediumRegistry,
+        peerSupportedMediums: Set<Medium>,
+        logger: (String) -> Unit,
+    ): ServerUpgradeOffer? {
         val selection =
             mediumRegistry.prepareBestUpgradeForCurrentTransport(
                 peerSupported = peerSupportedMediums,
@@ -49,47 +125,54 @@ internal object BandwidthUpgradeOrchestrator {
             )
         if (selection !is PreparedUpgradeSelection.Upgrade) {
             logger("medium-upgrade: server staying on current transport selection=$selection")
-            return ActiveTransportChannel(oldChannel, currentMedium)
+            return null
         }
 
         val credentials = selection.credentials
         val provider = mediumRegistry.providerFor(credentials.medium)
         if (provider == null) {
             logger("medium-upgrade: no provider for prepared medium ${credentials.medium}")
-            return ActiveTransportChannel(oldChannel, currentMedium)
+            return null
         }
 
         logger("medium-upgrade: server offering ${credentials.medium}")
         oldChannel.sendOfflineFrame(BandwidthUpgradeFrames.upgradePathAvailable(credentials))
+        return ServerUpgradeOffer(credentials, provider)
+    }
 
-        val transport =
-            withTimeoutOrNull(UPGRADE_TIMEOUT_MILLIS) {
-                provider.acceptUpgrade()
-            }
-        if (transport == null) {
-            logger("medium-upgrade: server accept timed out/failed for ${credentials.medium}")
-            provider.cancelPendingUpgrade()
-            runCatching { oldChannel.sendOfflineFrame(BandwidthUpgradeFrames.upgradeFailure(credentials.medium)) }
-            return ActiveTransportChannel(oldChannel, currentMedium)
-        }
-
+    /**
+     * Run the raw-introduction / last-write / safe-to-close swap onto an
+     * accepted [transport]. On failure hands the prior channel back, with
+     * [ActiveTransportChannel.fallbackChannelUsable] cleared when the peer
+     * had already committed to tearing that channel down.
+     */
+    @Suppress("LongParameterList")
+    suspend fun completeOfferedUpgrade(
+        oldChannel: SecureChannel,
+        currentMedium: Medium,
+        offer: ServerUpgradeOffer,
+        transport: UpgradedTransport,
+        peerEndpointId: String,
+        logger: (String) -> Unit,
+    ): ActiveTransportChannel {
         var priorChannelTeardownBegan = false
         return runCatching {
             completeServerUpgrade(
                 oldChannel = oldChannel,
                 transport = transport,
-                credentials = credentials,
+                credentials = offer.credentials,
                 peerEndpointId = peerEndpointId,
                 onPriorChannelTeardown = { priorChannelTeardownBegan = true },
                 logger = logger,
             )
         }.getOrElse { failure ->
+            if (failure is CancellationException) throw failure
             logger(
-                "medium-upgrade: server failed ${credentials.medium}: " +
+                "medium-upgrade: server failed ${offer.medium}: " +
                     (failure.message ?: failure::class.simpleName),
             )
             transport.close()
-            provider.cancelPendingUpgrade()
+            offer.provider.cancelPendingUpgrade()
             // See the client-side twin above: once the CLIENT_INTRODUCTION_ACK
             // went out, the peer proceeds with its own prior-channel teardown
             // (its LAST_WRITE follows the ack immediately), so the prior
@@ -673,12 +756,75 @@ internal object BandwidthUpgradeOrchestrator {
         )
     }
 
-    private const val UPGRADE_TIMEOUT_MILLIS: Long = 30_000L
+    internal const val UPGRADE_TIMEOUT_MILLIS: Long = 30_000L
     internal const val OFFER_WAIT_TIMEOUT_MILLIS: Long = 1_500L
     private const val SERVER_PEER_SAFE_DRAIN_MILLIS: Long = 500L
     private const val PRIOR_CHANNEL_DISCONNECT_DRAIN_MILLIS: Long = 200L
     private const val DUAL_CHANNEL_DRAIN_IDLE_ATTEMPTS: Int = 25
     private const val DUAL_CHANNEL_POLL_DELAY_MILLIS: Long = 10L
+}
+
+/**
+ * An `UPGRADE_PATH_AVAILABLE` offer that is on the wire and whose
+ * [provider] is listening for the peer. Settled by exactly one of
+ * [BandwidthUpgradeOrchestrator.completeOfferedUpgrade] or [abandon].
+ */
+internal class ServerUpgradeOffer(
+    val credentials: UpgradePathCredentials,
+    val provider: MediumProvider,
+) {
+    val medium: Medium
+        get() = credentials.medium
+
+    /**
+     * Start accepting the peer on the offered medium without waiting for
+     * it. The caller polls [Deferred.isCompleted] (or awaits) and MUST
+     * settle the job through [abandon] when it stops caring, so a listener
+     * parked in `accept()` is closed rather than leaked. Provider failures
+     * are folded into `null` so a completed-with-null job means "no
+     * transport"; only cancellation escapes.
+     */
+    fun launchAccept(
+        scope: CoroutineScope,
+        logger: (String) -> Unit,
+    ): Deferred<UpgradedTransport?> =
+        scope.async {
+            try {
+                provider.acceptUpgrade()
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (
+                @Suppress("TooGenericExceptionCaught") e: Exception,
+            ) {
+                logger(
+                    "medium-upgrade: server accept threw for $medium: " +
+                        (e.message ?: e::class.simpleName),
+                )
+                null
+            }
+        }
+
+    /**
+     * Give up on the pending offer: release the provider's listener and,
+     * when [notifyPeer] is set, tell the peer the offered path failed so a
+     * stock client stops trying to reach it. [pendingAccept] (when given)
+     * is joined after the listener is closed so the join cannot hang on a
+     * blocking `accept()`.
+     */
+    suspend fun abandon(
+        oldChannel: SecureChannel,
+        reason: String,
+        notifyPeer: Boolean,
+        logger: (String) -> Unit,
+        pendingAccept: Deferred<UpgradedTransport?>? = null,
+    ) {
+        logger("medium-upgrade: $reason")
+        provider.cancelPendingUpgrade()
+        pendingAccept?.cancelAndJoin()
+        if (notifyPeer) {
+            runCatching { oldChannel.sendOfflineFrame(BandwidthUpgradeFrames.upgradeFailure(medium)) }
+        }
+    }
 }
 
 internal data class ActiveTransportChannel(

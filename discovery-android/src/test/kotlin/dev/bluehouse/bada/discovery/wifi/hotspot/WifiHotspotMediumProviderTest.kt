@@ -8,7 +8,10 @@ package dev.bluehouse.bada.discovery.wifi.hotspot
 import com.google.common.truth.Truth.assertThat
 import dev.bluehouse.bada.protocol.medium.Medium
 import dev.bluehouse.bada.protocol.medium.UpgradePathCredentials
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.jupiter.api.Test
 import java.net.ServerSocket
 import java.net.Socket
@@ -193,6 +196,44 @@ class WifiHotspotMediumProviderTest {
 
     // --- fakes ---
 
+    @Test
+    fun `acceptUpgrade honours cancellation and tears the reservation down`() =
+        runBlocking {
+            withTimeout(WALLCLOCK_TIMEOUT_MS) {
+                val sock = ServerSocket(0)
+                var tornDown = false
+                val provider =
+                    WifiHotspotMediumProvider(
+                        controller =
+                            StaticController(
+                                HotspotReservation(
+                                    credentials =
+                                        UpgradePathCredentials.WifiHotspot(
+                                            ssid = "DIRECT-XX-Bada",
+                                            passphrase = "longenoughpass",
+                                            port = sock.localPort,
+                                            gateway = "127.0.0.1",
+                                        ),
+                                    serverSocket = sock,
+                                    teardown = {
+                                        tornDown = true
+                                        sock.close()
+                                    },
+                                ),
+                            ),
+                    )
+                assertThat(provider.prepareUpgrade()).isNotNull()
+
+                // No peer ever connects. Before #288 this accept parked an IO
+                // thread for good and the timeout below never returned.
+                val transport = withTimeoutOrNull(ACCEPT_TIMEOUT_MS) { provider.acceptUpgrade() }
+
+                assertThat(transport).isNull()
+                assertThat(tornDown).isTrue()
+                assertThat(sock.isClosed).isTrue()
+            }
+        }
+
     private object NeverStartingController : HotspotController {
         override suspend fun start(): HotspotReservation? = null
     }
@@ -211,5 +252,10 @@ class WifiHotspotMediumProviderTest {
         private val joined: JoinResult,
     ) : HotspotClient {
         override suspend fun join(credentials: UpgradePathCredentials.WifiHotspot): JoinResult = joined
+    }
+
+    private companion object {
+        const val ACCEPT_TIMEOUT_MS = 200L
+        const val WALLCLOCK_TIMEOUT_MS = 5_000L
     }
 }

@@ -7,6 +7,7 @@ package dev.bluehouse.bada.protocol.connection
 
 import com.google.android.gms.nearby.sharing.Protocol
 import com.google.common.truth.Truth.assertThat
+import com.google.location.nearby.connections.proto.OfflineWireFormatsProto.BandwidthUpgradeNegotiationFrame
 import com.google.location.nearby.connections.proto.OfflineWireFormatsProto.ConnectionRequestFrame
 import com.google.location.nearby.connections.proto.OfflineWireFormatsProto.OfflineFrame
 import com.google.location.nearby.connections.proto.OfflineWireFormatsProto.V1Frame
@@ -17,6 +18,12 @@ import dev.bluehouse.bada.protocol.crypto.pin.PinDerivation
 import dev.bluehouse.bada.protocol.crypto.securemessage.SecureChannel
 import dev.bluehouse.bada.protocol.endpoint.DeviceType
 import dev.bluehouse.bada.protocol.endpoint.EndpointInfo
+import dev.bluehouse.bada.protocol.medium.Medium
+import dev.bluehouse.bada.protocol.medium.MediumLadder
+import dev.bluehouse.bada.protocol.medium.MediumProvider
+import dev.bluehouse.bada.protocol.medium.MediumRegistry
+import dev.bluehouse.bada.protocol.medium.UpgradePathCredentials
+import dev.bluehouse.bada.protocol.medium.UpgradedTransport
 import dev.bluehouse.bada.protocol.payload.FileDestinationFactory
 import dev.bluehouse.bada.protocol.payload.PayloadAssembler
 import dev.bluehouse.bada.protocol.payload.PayloadEvent
@@ -29,10 +36,14 @@ import dev.bluehouse.bada.protocol.sharing.SharingFsmEvent
 import dev.bluehouse.bada.protocol.transport.FramedConnection
 import dev.bluehouse.bada.protocol.ukey2.Ukey2Client
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import java.net.InetAddress
@@ -41,6 +52,8 @@ import java.net.Socket
 import java.nio.ByteBuffer
 import java.nio.channels.SeekableByteChannel
 import java.security.SecureRandom
+import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * End-to-end integration tests for [InboundConnection].
@@ -837,6 +850,404 @@ class InboundConnectionTest {
     // Synthetic sender harness
     // -------------------------------------------------------------
 
+    // ------------------------------------------------------------------
+    // #288: an offered bandwidth upgrade must never stall the LAN
+    // negotiation. A stock GMS sender that ignores (or fails) the offer
+    // keeps negotiating on the prior channel; the receiver has to keep
+    // servicing that channel instead of parking on the provider's accept.
+
+    @Test
+    fun `pending upgrade offer does not stall negotiation when the peer ignores it`() =
+        runBlocking {
+            withTimeout(PENDING_UPGRADE_WALLCLOCK_MS) {
+                val (clientSocket, serverSocket) = connectedSocketPair()
+                val factory = InMemoryFactory()
+                val provider = HangingServerProvider()
+                val logs = Collections.synchronizedList(mutableListOf<String>())
+                val inbound =
+                    InboundConnection(
+                        serverSocket,
+                        secureRandom = SecureRandom("inbound-288-ignored".toByteArray()),
+                        mediumRegistry = upgradeRegistry(provider),
+                        logger = logs::add,
+                    )
+                val fileBytes = ByteArray(4000) { (it * 7 and 0xFF).toByte() }
+                val filePayloadId = 0x2881L
+                val options =
+                    SenderOptions(
+                        advertisedMediums =
+                            listOf(ConnectionRequestFrame.Medium.WIFI_LAN, ConnectionRequestFrame.Medium.WIFI_DIRECT),
+                    )
+
+                coroutineScope {
+                    val receiverJob = async { inbound.run(factory) }
+                    launch {
+                        inbound.state.first { it is InboundConnectionState.WaitingForUserConsent }
+                        inbound.submitUserConsent(accepted = true)
+                    }
+                    runSyntheticSender(
+                        socket = clientSocket,
+                        introduction = fileIntroduction(filePayloadId, fileBytes.size),
+                        files = mapOf(filePayloadId to fileBytes),
+                        texts = emptyMap(),
+                        secureRandom = SecureRandom("sender-288-ignored".toByteArray()),
+                        options = options,
+                    )
+                    assertThat(receiverJob.await()).isInstanceOf(InboundResult.Completed::class.java)
+                }
+
+                assertThat(factory.output[filePayloadId]?.toByteArray()).isEqualTo(fileBytes)
+                assertThat(inbound.activeMedium.value).isEqualTo(Medium.WIFI_LAN)
+                assertThat(options.upgradeEvents)
+                    .contains(BandwidthUpgradeNegotiationFrame.EventType.UPGRADE_PATH_AVAILABLE)
+                assertThat(logs).contains("medium-upgrade: server offering WIFI_DIRECT")
+                // The session ended with the offer still open: the listener
+                // must have been released rather than left parked forever.
+                assertThat(provider.cancelCalls.get()).isEqualTo(1)
+            }
+        }
+
+    @Test
+    fun `peer UPGRADE_FAILURE settles the pending offer and negotiation continues on LAN`() =
+        runBlocking {
+            withTimeout(PENDING_UPGRADE_WALLCLOCK_MS) {
+                val (clientSocket, serverSocket) = connectedSocketPair()
+                val factory = InMemoryFactory()
+                val provider = HangingServerProvider()
+                val logs = Collections.synchronizedList(mutableListOf<String>())
+                val inbound =
+                    InboundConnection(
+                        serverSocket,
+                        secureRandom = SecureRandom("inbound-288-declined".toByteArray()),
+                        mediumRegistry = upgradeRegistry(provider),
+                        logger = logs::add,
+                    )
+                val fileBytes = ByteArray(2500) { (it * 11 and 0xFF).toByte() }
+                val filePayloadId = 0x2882L
+                val options =
+                    SenderOptions(
+                        advertisedMediums =
+                            listOf(ConnectionRequestFrame.Medium.WIFI_LAN, ConnectionRequestFrame.Medium.WIFI_DIRECT),
+                        declineUpgradeOffer = true,
+                    )
+
+                coroutineScope {
+                    val receiverJob = async { inbound.run(factory) }
+                    launch {
+                        inbound.state.first { it is InboundConnectionState.WaitingForUserConsent }
+                        inbound.submitUserConsent(accepted = true)
+                    }
+                    runSyntheticSender(
+                        socket = clientSocket,
+                        introduction = fileIntroduction(filePayloadId, fileBytes.size),
+                        files = mapOf(filePayloadId to fileBytes),
+                        texts = emptyMap(),
+                        secureRandom = SecureRandom("sender-288-declined".toByteArray()),
+                        options = options,
+                    )
+                    assertThat(receiverJob.await()).isInstanceOf(InboundResult.Completed::class.java)
+                }
+
+                assertThat(factory.output[filePayloadId]?.toByteArray()).isEqualTo(fileBytes)
+                assertThat(inbound.activeMedium.value).isEqualTo(Medium.WIFI_LAN)
+                assertThat(logs)
+                    .contains("medium-upgrade: peer reported UPGRADE_FAILURE for WIFI_DIRECT; continuing on WIFI_LAN")
+                assertThat(provider.cancelCalls.get()).isEqualTo(1)
+            }
+        }
+
+    @Test
+    fun `pending upgrade offer times out and reports UPGRADE_FAILURE without stalling negotiation`() =
+        runBlocking {
+            withTimeout(PENDING_UPGRADE_WALLCLOCK_MS) {
+                val (clientSocket, serverSocket) = connectedSocketPair()
+                val factory = InMemoryFactory()
+                val provider = HangingServerProvider()
+                val logs = Collections.synchronizedList(mutableListOf<String>())
+                val inbound =
+                    InboundConnection(
+                        socket = serverSocket,
+                        secureRandom = SecureRandom("inbound-288-timeout".toByteArray()),
+                        mediumRegistry = upgradeRegistry(provider),
+                        logger = logs::add,
+                        upgradeAcceptTimeoutMillis = SHORT_UPGRADE_ACCEPT_TIMEOUT_MS,
+                    )
+                val fileBytes = ByteArray(1800) { (it * 13 and 0xFF).toByte() }
+                val filePayloadId = 0x2883L
+                // The sender sits quiet past the receiver's accept window, so
+                // the timeout path (not the peer's traffic) settles the offer.
+                val options =
+                    SenderOptions(
+                        advertisedMediums =
+                            listOf(ConnectionRequestFrame.Medium.WIFI_LAN, ConnectionRequestFrame.Medium.WIFI_DIRECT),
+                        negotiationDelayMillis = SHORT_UPGRADE_ACCEPT_TIMEOUT_MS * 3,
+                    )
+
+                coroutineScope {
+                    val receiverJob = async { inbound.run(factory) }
+                    launch {
+                        inbound.state.first { it is InboundConnectionState.WaitingForUserConsent }
+                        inbound.submitUserConsent(accepted = true)
+                    }
+                    runSyntheticSender(
+                        socket = clientSocket,
+                        introduction = fileIntroduction(filePayloadId, fileBytes.size),
+                        files = mapOf(filePayloadId to fileBytes),
+                        texts = emptyMap(),
+                        secureRandom = SecureRandom("sender-288-timeout".toByteArray()),
+                        options = options,
+                    )
+                    assertThat(receiverJob.await()).isInstanceOf(InboundResult.Completed::class.java)
+                }
+
+                assertThat(factory.output[filePayloadId]?.toByteArray()).isEqualTo(fileBytes)
+                assertThat(inbound.activeMedium.value).isEqualTo(Medium.WIFI_LAN)
+                assertThat(logs)
+                    .contains("medium-upgrade: server accept timed out/failed for WIFI_DIRECT; continuing on WIFI_LAN")
+                assertThat(options.upgradeEvents)
+                    .containsExactly(
+                        BandwidthUpgradeNegotiationFrame.EventType.UPGRADE_PATH_AVAILABLE,
+                        BandwidthUpgradeNegotiationFrame.EventType.UPGRADE_FAILURE,
+                    ).inOrder()
+                assertThat(provider.cancelCalls.get()).isEqualTo(1)
+            }
+        }
+
+    @Test
+    fun `receiver adopts a late upgrade transport mid-negotiation`() =
+        runBlocking {
+            withTimeout(PENDING_UPGRADE_WALLCLOCK_MS) {
+                val (clientSocket, serverSocket) = connectedSocketPair()
+                val factory = InMemoryFactory()
+                // The peer reaches the offered medium only after the receiver
+                // has already opened the sharing negotiation on the LAN
+                // channel; the swap must land mid-negotiation and the
+                // transfer must finish on the upgraded medium.
+                val upgradePair = LoopbackUpgradePair(acceptDelayMillis = LATE_UPGRADE_ACCEPT_DELAY_MS)
+                val logs = Collections.synchronizedList(mutableListOf<String>())
+                val inbound =
+                    InboundConnection(
+                        serverSocket,
+                        secureRandom = SecureRandom("inbound-288-late".toByteArray()),
+                        mediumRegistry = upgradeRegistry(upgradePair.serverProvider),
+                        logger = logs::add,
+                    )
+                val fileBytes = ByteArray(6000) { (it * 5 and 0xFF).toByte() }
+                val filePayloadId = 0x2884L
+                val options =
+                    SenderOptions(
+                        advertisedMediums =
+                            listOf(ConnectionRequestFrame.Medium.WIFI_LAN, ConnectionRequestFrame.Medium.WIFI_DIRECT),
+                        adoptUpgradeRegistry = upgradeRegistry(upgradePair.clientProvider),
+                    )
+
+                try {
+                    coroutineScope {
+                        val receiverJob = async { inbound.run(factory) }
+                        launch {
+                            inbound.state.first { it is InboundConnectionState.WaitingForUserConsent }
+                            inbound.submitUserConsent(accepted = true)
+                        }
+                        runSyntheticSender(
+                            socket = clientSocket,
+                            introduction = fileIntroduction(filePayloadId, fileBytes.size),
+                            files = mapOf(filePayloadId to fileBytes),
+                            texts = emptyMap(),
+                            secureRandom = SecureRandom("sender-288-late".toByteArray()),
+                            options = options,
+                        )
+                        assertThat(receiverJob.await()).isInstanceOf(InboundResult.Completed::class.java)
+                    }
+
+                    assertThat(factory.output[filePayloadId]?.toByteArray()).isEqualTo(fileBytes)
+                    assertThat(inbound.activeMedium.value).isEqualTo(Medium.WIFI_DIRECT)
+                    assertThat(logs).contains("medium-upgrade: server completed WIFI_DIRECT")
+                    // The opening PAIRED_KEY_ENCRYPTION went out on the LAN
+                    // channel while the offer was still pending — proof the
+                    // negotiation did not wait for the swap.
+                    val offerIndex = logs.indexOfFirst { it.startsWith("medium-upgrade: server offering") }
+                    val firstPkeIndex = logs.indexOfFirst { it.startsWith("sharing: sending PAIRED_KEY_ENCRYPTION") }
+                    val completedIndex = logs.indexOfFirst { it.startsWith("medium-upgrade: server completed") }
+                    assertThat(offerIndex).isAtLeast(0)
+                    assertThat(firstPkeIndex).isGreaterThan(offerIndex)
+                    assertThat(firstPkeIndex).isLessThan(completedIndex)
+                } finally {
+                    upgradePair.close()
+                }
+            }
+        }
+
+    /**
+     * Pre-connected loopback socket pair standing in for a Wi-Fi Direct
+     * link: the server provider hands out its end (after an optional
+     * delay), the client provider adopts the other.
+     */
+    private class LoopbackUpgradePair(
+        private val acceptDelayMillis: Long,
+    ) {
+        private val credentials =
+            UpgradePathCredentials.WifiDirect(
+                ipAddress = byteArrayOf(127, 0, 0, 1),
+                port = 1,
+                ssid = "DIRECT-bada-288",
+                passphrase = "12345678",
+                frequency = 5_180,
+            )
+        private val clientSocket: Socket
+        private val serverSocket: Socket
+
+        init {
+            val listener = ServerSocket(0, 0, InetAddress.getLoopbackAddress())
+            clientSocket = Socket(InetAddress.getLoopbackAddress(), listener.localPort)
+            serverSocket = listener.accept()
+            listener.close()
+        }
+
+        val clientProvider: MediumProvider =
+            object : MediumProvider {
+                override val medium: Medium = Medium.WIFI_DIRECT
+
+                override fun isSupported(): Boolean = true
+
+                override suspend fun adoptUpgrade(credentials: UpgradePathCredentials): UpgradedTransport =
+                    UpgradedTransport.SocketBacked(Medium.WIFI_DIRECT, clientSocket)
+            }
+
+        val serverProvider: MediumProvider =
+            object : MediumProvider {
+                override val medium: Medium = Medium.WIFI_DIRECT
+
+                override fun isSupported(): Boolean = true
+
+                override suspend fun prepareUpgrade(): UpgradePathCredentials = credentials
+
+                override suspend fun acceptUpgrade(): UpgradedTransport {
+                    delay(acceptDelayMillis)
+                    return UpgradedTransport.SocketBacked(Medium.WIFI_DIRECT, serverSocket)
+                }
+            }
+
+        fun close() {
+            runCatching { clientSocket.close() }
+            runCatching { serverSocket.close() }
+        }
+    }
+
+    /**
+     * Server-side provider whose accept never completes on its own —
+     * models a real Wi-Fi Direct listener parked in `accept()` while the
+     * peer ignores the offer. Only cancellation ends it.
+     */
+    private class HangingServerProvider : MediumProvider {
+        override val medium: Medium = Medium.WIFI_DIRECT
+        val cancelCalls = AtomicInteger()
+
+        override fun isSupported(): Boolean = true
+
+        override suspend fun prepareUpgrade(): UpgradePathCredentials =
+            UpgradePathCredentials.Generic(Medium.WIFI_DIRECT)
+
+        override suspend fun acceptUpgrade(): UpgradedTransport? = awaitCancellation()
+
+        override fun cancelPendingUpgrade() {
+            cancelCalls.incrementAndGet()
+        }
+    }
+
+    private fun upgradeRegistry(provider: MediumProvider): MediumRegistry =
+        MediumRegistry(
+            providers =
+                listOf(
+                    MediumRegistry.DefaultWifiLan.providerFor(Medium.WIFI_LAN)!!,
+                    provider,
+                ),
+            ladder = MediumLadder(listOf(Medium.WIFI_DIRECT, Medium.WIFI_LAN)),
+        )
+
+    private fun fileIntroduction(
+        payloadId: Long,
+        size: Int,
+    ): IntroductionFrame =
+        IntroductionFrame
+            .newBuilder()
+            .addFileMetadata(
+                Protocol.FileMetadata
+                    .newBuilder()
+                    .setName("file-$payloadId.bin")
+                    .setPayloadId(payloadId)
+                    .setSize(size.toLong())
+                    .setMimeType("application/octet-stream")
+                    .build(),
+            ).build()
+
+    /**
+     * Knobs for [runSyntheticSender] that model how a real sender reacts
+     * to the receiver's bandwidth-upgrade offer.
+     */
+    private class SenderOptions(
+        /** `ConnectionRequestFrame.mediums` advertised to the receiver. */
+        val advertisedMediums: List<ConnectionRequestFrame.Medium> = emptyList(),
+        /** Delay before the first sharing frame goes out. */
+        val negotiationDelayMillis: Long = 0L,
+        /** Reply to `UPGRADE_PATH_AVAILABLE` with `UPGRADE_FAILURE`. */
+        val declineUpgradeOffer: Boolean = false,
+        /**
+         * When set, take `UPGRADE_PATH_AVAILABLE` offers through this
+         * registry's client provider instead of ignoring them.
+         */
+        val adoptUpgradeRegistry: MediumRegistry? = null,
+    ) {
+        /** Every bandwidth-upgrade event the sender saw, in arrival order. */
+        val upgradeEvents: MutableList<BandwidthUpgradeNegotiationFrame.EventType> =
+            Collections.synchronizedList(mutableListOf())
+    }
+
+    @Suppress("ReturnCount") // One early return per sender reaction keeps the three modes readable.
+    private suspend fun observeUpgradeFrame(
+        wire: SenderWire,
+        frame: OfflineFrame,
+        options: SenderOptions,
+    ) {
+        val negotiation = frame.v1.bandwidthUpgradeNegotiation
+        options.upgradeEvents += negotiation.eventType
+        if (negotiation.eventType != BandwidthUpgradeNegotiationFrame.EventType.UPGRADE_PATH_AVAILABLE) return
+        if (options.declineUpgradeOffer) {
+            val medium = Medium.fromUpgradePathMedium(negotiation.upgradePathInfo.medium) ?: Medium.WIFI_DIRECT
+            wire.channel.sendOfflineFrame(BandwidthUpgradeFrames.upgradeFailure(medium))
+            return
+        }
+        val registry = options.adoptUpgradeRegistry ?: return
+        // Take the offer the way a stock client does: connect to the
+        // offered medium, run the raw introduction + prior-channel close,
+        // then continue on the upgraded channel with whatever sharing
+        // frames the receiver had already put on the old one.
+        val upgraded =
+            BandwidthUpgradeOrchestrator.runClientUpgradeFromOffer(
+                oldChannel = wire.channel,
+                currentMedium = Medium.WIFI_LAN,
+                offer = frame,
+                mediumRegistry = registry,
+                endpointId = "ABCD",
+                logger = {},
+            )
+        assertThat(upgraded.fallbackChannelUsable).isTrue()
+        assertThat(upgraded.channel).isNotSameInstanceAs(wire.channel)
+        wire.channel = upgraded.channel
+        wire.buffered.addAll(upgraded.bufferedFrames)
+    }
+
+    private companion object {
+        /**
+         * Generous wall-clock bound for the pending-upgrade tests. A
+         * regression that parks the receiver on the provider's accept
+         * again would only surface after the 30 s production timeout, so
+         * this bound is what turns the stall into a failure.
+         */
+        const val PENDING_UPGRADE_WALLCLOCK_MS = 10_000L
+        const val SHORT_UPGRADE_ACCEPT_TIMEOUT_MS = 300L
+        const val LATE_UPGRADE_ACCEPT_DELAY_MS = 400L
+    }
+
     /**
      * Drives the entire sender-side wire protocol against the given
      * [socket]. Mirrors what a real Quick Share sender does:
@@ -857,6 +1268,7 @@ class InboundConnectionTest {
         texts: Map<Long, ByteArray>,
         secureRandom: SecureRandom,
         endpointInfo: ByteArray = ByteArray(0),
+        options: SenderOptions = SenderOptions(),
     ) {
         val transport = FramedConnection(socket)
         val requestBuilder =
@@ -864,6 +1276,7 @@ class InboundConnectionTest {
                 .newBuilder()
                 .setEndpointId("ABCD")
                 .setEndpointName("test-sender")
+                .addAllMediums(options.advertisedMediums)
         if (endpointInfo.isNotEmpty()) {
             requestBuilder.setEndpointInfo(ByteString.copyFrom(endpointInfo))
         }
@@ -925,11 +1338,16 @@ class InboundConnectionTest {
         assertThat(ourPin.length).isEqualTo(TransferMetadata.PIN_LENGTH)
 
         val channel = SecureChannel(transport, sessionKeys, secureRandom)
+        val wire = SenderWire(channel)
         val fsm = OutboundSharingFsm(introduction = introduction, secureRandom = secureRandom)
         val assembler = PayloadAssembler()
 
+        // Optional stall before the first sharing frame, so a test can
+        // let a receiver-side upgrade window close before negotiating.
+        if (options.negotiationDelayMillis > 0L) delay(options.negotiationDelayMillis)
+
         // Push the FSM's initial PKE.
-        applySenderEffects(channel, fsm.start(), secureRandom)
+        applySenderEffects(wire.channel, fsm.start(), secureRandom)
 
         // Drive the FSM through to SendingPayloads or a terminal state.
         // We treat the loop body as "process one frame" and use a flag
@@ -938,17 +1356,29 @@ class InboundConnectionTest {
         while (keepRunning) {
             keepRunning =
                 pumpOneSenderFrame(
-                    channel = channel,
+                    wire = wire,
                     fsm = fsm,
                     assembler = assembler,
                     secureRandom = secureRandom,
                     files = files,
                     texts = texts,
+                    options = options,
                 )
         }
 
+        runCatching { wire.channel.close() }
         runCatching { channel.close() }
         runCatching { transport.close() }
+    }
+
+    /**
+     * The synthetic sender's current channel plus frames handed back by a
+     * bandwidth upgrade that must be processed before reading the wire.
+     */
+    private class SenderWire(
+        var channel: SecureChannel,
+    ) {
+        val buffered: ArrayDeque<OfflineFrame> = ArrayDeque()
     }
 
     /**
@@ -957,15 +1387,20 @@ class InboundConnectionTest {
      */
     @Suppress("LongParameterList", "ReturnCount")
     private suspend fun pumpOneSenderFrame(
-        channel: SecureChannel,
+        wire: SenderWire,
         fsm: OutboundSharingFsm,
         assembler: PayloadAssembler,
         secureRandom: SecureRandom,
         files: Map<Long, ByteArray>,
         texts: Map<Long, ByteArray>,
+        options: SenderOptions = SenderOptions(),
     ): Boolean {
-        val frame = channel.receiveOfflineFrame()
+        val frame = wire.buffered.removeFirstOrNull() ?: wire.channel.receiveOfflineFrame()
         if (frame.v1.type == V1Frame.FrameType.DISCONNECTION) return false
+        if (frame.v1.type == V1Frame.FrameType.BANDWIDTH_UPGRADE_NEGOTIATION) {
+            observeUpgradeFrame(wire, frame, options)
+            return true
+        }
         if (frame.v1.type != V1Frame.FrameType.PAYLOAD_TRANSFER) return true
 
         val event = assembler.onPayloadTransfer(frame.v1.payloadTransfer)
@@ -973,13 +1408,13 @@ class InboundConnectionTest {
 
         val sharing = SharingFrames.parse(event.data)
         val effects = fsm.onEvent(SharingFsmEvent.FrameReceived(sharing))
-        applySenderEffects(channel, effects, secureRandom)
+        applySenderEffects(wire.channel, effects, secureRandom)
 
         if (effects.any { it is SharingFsmEffect.Rejected }) return false
         if (sharing.v1.type == Protocol.V1Frame.FrameType.CANCEL) return false
         if (effects.any { it is SharingFsmEffect.ReadyToSendPayloads }) {
             // ACCEPT received: stream the file / text payloads.
-            streamPayloads(channel, files, texts)
+            streamPayloads(wire.channel, files, texts)
             // Receiver will send Disconnection back to us. Loop round
             // to consume it.
         }

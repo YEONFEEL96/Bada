@@ -133,6 +133,12 @@ public class InboundConnection(
      * disabled (e.g. 0 = Windows Quick Share — see issue #200).
      */
     internal val safeToDisconnectVersion: Int = OfflineFrames.SAFE_TO_DISCONNECT_VERSION,
+    /**
+     * How long an offered bandwidth upgrade waits for the peer before the
+     * receiver gives up on it and stays on the bootstrap channel. Tests
+     * inject shorter values; production keeps the orchestrator default.
+     */
+    internal val upgradeAcceptTimeoutMillis: Long = BandwidthUpgradeOrchestrator.UPGRADE_TIMEOUT_MILLIS,
 ) {
     public constructor(
         socket: Socket,
@@ -144,6 +150,20 @@ public class InboundConnection(
         secureRandom = secureRandom,
         mediumRegistry = mediumRegistry,
         logger = logger,
+    )
+
+    internal constructor(
+        socket: Socket,
+        secureRandom: SecureRandom,
+        mediumRegistry: MediumRegistry,
+        logger: (String) -> Unit,
+        upgradeAcceptTimeoutMillis: Long,
+    ) : this(
+        transport = socket.asConnectedTransport(),
+        secureRandom = secureRandom,
+        mediumRegistry = mediumRegistry,
+        logger = logger,
+        upgradeAcceptTimeoutMillis = upgradeAcceptTimeoutMillis,
     )
 
     private val mutableState: MutableStateFlow<InboundConnectionState> =
@@ -274,6 +294,7 @@ public class InboundConnection(
                 onHandshakeComplete = ::markHandshakeComplete,
                 logger = logger,
                 safeToDisconnectVersion = safeToDisconnectVersion,
+                upgradeAcceptTimeoutMillis = upgradeAcceptTimeoutMillis,
             )
 
         return try {
